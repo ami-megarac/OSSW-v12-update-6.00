@@ -1,0 +1,16 @@
+--- linux-5.4.99/drivers/net/ethernet/dec/tulip/pnic.c	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/net/ethernet/dec/tulip/pnic.c	2021-03-23 14:42:03.841880836 +0800
+@@ -84,10 +84,10 @@
+ 	}
+ }
+ 
+-void pnic_timer(struct timer_list *t)
++void pnic_timer(unsigned long data)
+ {
+-	struct tulip_private *tp = from_timer(tp, t, timer);
+-	struct net_device *dev = tp->dev;
++	struct net_device *dev = (struct net_device *)data;
++	struct tulip_private *tp = netdev_priv(dev);
+ 	void __iomem *ioaddr = tp->base_addr;
+ 	int next_tick = 60*HZ;
+ 

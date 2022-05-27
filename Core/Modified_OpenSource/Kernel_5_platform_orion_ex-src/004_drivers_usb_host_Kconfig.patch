@@ -1,0 +1,15 @@
+--- linux/drivers/usb/host/Kconfig	2021-02-17 17:35:20.000000000 +0800
++++ linux_new/drivers/usb/host/Kconfig	2021-04-26 17:47:20.920819000 +0800
+@@ -17,6 +17,12 @@
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called c67x00.
+ 
++config USB_PILOT4_HCD
++	tristate "Pilot4 HCD support"
++	depends on USB
++	help
++		USB HC
++
+ config USB_XHCI_HCD
+ 	tristate "xHCI HCD (USB 3.0) support"
+ 	depends on HAS_DMA && HAS_IOMEM

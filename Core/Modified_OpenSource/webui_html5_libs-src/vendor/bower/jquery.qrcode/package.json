@@ -1,0 +1,48 @@
+{
+  "_from": "jquery.qrcode",
+  "_id": "jquery.qrcode@1.0.3",
+  "_inBundle": false,
+  "_integrity": "sha1-mK003rf0AdcpgcZ2l5DL04qqOfA=",
+  "_location": "/jquery.qrcode",
+  "_phantomChildren": {},
+  "_requested": {
+    "type": "tag",
+    "registry": true,
+    "raw": "jquery.qrcode",
+    "name": "jquery.qrcode",
+    "escapedName": "jquery.qrcode",
+    "rawSpec": "",
+    "saveSpec": null,
+    "fetchSpec": "latest"
+  },
+  "_requiredBy": [
+    "#USER",
+    "/"
+  ],
+  "_resolved": "https://registry.npmjs.org/jquery.qrcode/-/jquery.qrcode-1.0.3.tgz",
+  "_shasum": "98ad34deb7f401d72981c6769790cbd38aaa39f0",
+  "_spec": "jquery.qrcode",
+  "_where": "/home/albert5718/opensource",
+  "author": {
+    "name": "http://jeromeetienne.github.com/jquery-qrcode"
+  },
+  "bugs": {
+    "url": "http://jeromeetienne.github.com/jquery-qrcode/issues"
+  },
+  "bundleDependencies": false,
+  "deprecated": false,
+  "description": "http://jeromeetienne.github.com/jquery-qrcode",
+  "homepage": "http://jeromeetienne.github.com/jquery-qrcode#readme",
+  "keywords": [
+    "jquery",
+    "qrcode"
+  ],
+  "license": "ISC",
+  "main": "jquery.qrcode.min.js",
+  "name": "jquery.qrcode",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liu-dongyu/jquery-qrcode.git"
+  },
+  "version": "1.0.3"
+}

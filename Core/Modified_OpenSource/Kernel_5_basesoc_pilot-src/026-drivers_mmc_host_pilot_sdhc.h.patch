@@ -1,0 +1,337 @@
+--- linux-5.4.99/drivers/mmc/host/pilot_sdhc.h	2021-03-23 14:32:04.056658370 +0800
++++ linux/drivers/mmc/host/pilot_sdhc.h	2021-03-19 17:18:44.995964000 +0800
+@@ -0,0 +1,334 @@
++/*********************************************************************************
++ *  
++ * Copyright (C) 2004-2014 Emulex. All rights reserved.
++ * EMULEX is a trademark of Emulex.
++ * www.emulex.com
++ *   
++ * This program is free software; you can redistribute it and/or modify it under
++ * the terms of version 2 of the GNU General Public License as published by the
++ * Free Software Foundation.
++ * This program is distributed in the hope that it will be useful. ALL EXPRESS
++ * OR IMPLIED CONDITIONS, REPRESENTATIONS AND WARRANTIES, INCLUDING ANY IMPLIED
++ * WARRANTY OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR
++ * NON-INFRINGEMENT, ARE DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS
++ * ARE HELD TO BE LEGALLY INVALID. See the GNU General Public License for more
++ * details, a copy of which can be found in the file COPYING included
++ * with this package.
++ *   
++ ********************************************************************************/
++
++//#define SDHC_DEBUG    1
++
++#ifdef SDHC_DEBUG
++#define PILOT_SDHC_DEBUG(fmt ...) printk(fmt);
++#else
++#define PILOT_SDHC_DEBUG(fmt ...)    asm("nop");
++#endif
++
++#define MULTIBLOCK_WRITE        1
++
++/* SDHC register defines */
++#define SDMAADDR_REG           0x000
++#define BLKCTL_REG             0x004
++#define CMDARG_REG             0x008
++#define CMDCTL_REG             0x00C
++
++#define SDRESP0_REG            0x010
++#define SDRESP1_REG            0x014
++#define SDRESP2_REG            0x018
++#define SDRESP3_REG            0x01C
++
++#define PRSNTST_REG            0x024
++#define SDHCCTL_REG            0x028
++#define SDCLKCTL_REG           0x02C
++
++#define SDINTSTS_REG           0x030
++#define SDINTSEN_REG           0x034
++#define SDINTEN_REG            0x038
++#define AUTOCMD12_REG          0x03C
++#define FSBLK_CTRL_REG         0x084
++
++#define CMDTMR_REG             0x100
++#define RSPTMR_REG             0x104
++#define TXDTTMR_REG            0x108
++#define RXDTTMR_REG            0x10C
++#define LTXSTS_REG             0x118
++
++#define LMEMADDR_REG           0x130
++#define LMEMCNT_REG            0x134
++#define LMEMCFG_REG            0x138
++#define LMEMCTL_REG            0x13C
++#define LMEMSTATUS_REG         0x140
++
++#define PILOT_SDHC_ERR_NONE	0
++
++/* Interrupt status of differrent bits in interrupt status register */
++#define PILOT_SDHC_MMC_BOOT_ACK         0x10000000
++#define PILOT_SDHC_WRITE_CMD_RSP_ERR    0x08000000
++#define PILOT_SDHC_XDMA_COMPL_ERR       0x04000000
++#define PILOT_SDHC_MMC_BOOT_COMPL       0x02000000
++#define PILOT_SDHC_AUTO_CMD12_COMPL     0x01000000
++#define PILOT_SDHC_LIMIT_ERR            0x00800000
++#define PILOT_SDHC_DATA_END_BIT_ERR     0x00400000
++#define PILOT_SDHC_DATA_CRC_ERR         0x00200000
++#define PILOT_SDHC_DATA_TIMEOUT_ERR     0x00100000
++#define PILOT_SDHC_CMD_INDEX_ERR        0x00080000
++#define PILOT_SDHC_CMD_END_BIT_ERR      0x00040000
++#define PILOT_SDHC_CMD_CRC_ERR          0x00020000
++#define PILOT_SDHC_CMD_TIMEOUT_ERR      0x00010000
++#define PILOT_SDHC_WRITE_PROTCT_ERR     0x00000200
++#define PILOT_SDHC_CARD_INTRPT          0x00000100
++#define PILOT_SDHC_CARD_REMOVAL         0x00000080
++#define PILOT_SDHC_CARD_INSERTION       0x00000040
++#define PILOT_SDHC_BUFFER_READ_RDY      0x00000020
++#define PILOT_SDHC_BUFFER_WRITE_RDY     0x00000010
++#define PILOT_SDHC_DMA_INTERRUPT        0x00000008
++#define PILOT_SDHC_TRANSFER_COMPL       0x00000002
++#define PILOT_SDHC_COMMAND_COMPL        0X00000001
++
++#define PILOT_SDHC_DESCRIPTOR_COUNT 1
++#define PILOT_SDHC_DESCRIPTOR_SIZE 512
++
++#define HOST_F_XMIT   0x0001
++#define HOST_F_RECV   0x0002
++#define HOST_F_DMA    0x0010
++#define HOST_F_ACTIVE 0x0100
++#define HOST_F_STOP   0x1000
++#define HOST_F_RESET  0x2000  /* Signal a Host Controller, reset is required */
++
++
++#define HOST_S_IDLE   0x0001
++#define HOST_S_CMD    0x0002
++#define HOST_S_DATA   0x0003
++#define HOST_S_STOP   0x0004
++
++#define BITS1   0x1
++#define BITS2   0x3
++#define BITS3   0x7
++#define BITS4   0xf
++#define BITS5   0x1f
++#define BITS6   0x3f
++#define BITS7   0x7f
++#define BITS8   0xff
++#define BITS9   0x1ff
++#define BITS10  0x3ff
++#define BITS11  0x7ff
++#define BITS12  0xfff
++#define BITS13  0x1fff
++#define BITS14  0x3fff
++#define BITS15  0x7fff
++#define BITS16  0xffff
++
++/* PRSNTST_REG bit definitions */
++#define WR_TRANSFER_ACTIVE_POS             8
++#define WR_TRANSFER_ACTIVE_BITS            BITS1
++#define WR_TRANSFER_ACTIVE                 (WR_TRANSFER_ACTIVE_BITS << WR_TRANSFER_ACTIVE_POS)
++#define RD_TRANSFER_ACTIVE_POS             9
++#define RD_TRANSFER_ACTIVE_BITS            BITS1
++#define RD_TRANSFER_ACTIVE                 (RD_TRANSFER_ACTIVE_BITS << RD_TRANSFER_ACTIVE_POS)
++#define BUF_WR_ENABLE_POS                  10
++#define BUF_WR_ENABLE_BITS                 BITS1
++#define BUF_WR_ENABLE                      (BUF_WR_ENABLE_BITS << BUF_WR_ENABLE_POS)
++#define BUF_RD_ENABLE_POS                  11
++#define BUF_RD_ENABLE_BITS                 BITS1
++#define BUF_RD_ENABLE                      (BUF_RD_ENABLE_BITS << BUF_RD_ENABLE_POS)
++#define CARD_INSERTED_POS                  16
++#define CARD_INSERTED_BITS                 BITS1
++#define CARD_INSERTED                      (CARD_INSERTED_BITS << CARD_INSERTED_POS)
++#define CARD_DETECT_PIN_STATUS_POS         18
++#define CARD_DETECT_PIN_STATUS_BITS        BITS1
++#define CARD_DETECT_PIN_STATUS             (CARD_DETECT_PIN_STATUS_BITS << CARD_DETECT_PIN_STATUS_POS)
++#define WRITE_PROTECT_PIN_STATUS_POS       19
++#define WRITE_PROTECT_PIN_STATUS_BITS      BITS1
++#define WRITE_PROTECT_PIN_STATUS           (WRITE_PROTECT_PIN_STATUS_BITS << WRITE_PROTECT_PIN_STATUS_POS)
++#define DAT_3_0_LEVEL_POS                  20
++#define DAT_3_0_LEVEL_BITS                 BITS4
++#define DAT_3_0_LEVEL                      (DAT_3_0_LEVEL_BITS << DAT_3_0_LEVEL_POS)
++#define CMD_LINE_SIGNAL_LEVEL_POS          24
++#define CMD_LINE_SIGNAL_LEVEL_BITS         BITS1
++#define CMD_LINE_SIGNAL_LEVEL              (CMD_LINE_SIGNAL_LEVEL_BITS << CMD_LINE_SIGNAL_LEVEL_POS)
++
++/* SDCLKCTL bit definations */
++#define SDCLK_SELECT_POS                   0
++#define SDCLK_SELECT_BITS                  BITS2
++#define SDCLK_SELECT                       (SDCLK_SELECT_BITS<<SDCLK_SELECT_POS)
++#define SDCLK_CLK_ENABLE_POS               2
++#define SDCLK_CLK_ENABLE_BITS              BITS1
++#define SDCLK_CLK_ENABLE                   (SDCLK_CLK_ENABLE_BITS<<SDCLK_CLK_ENABLE_POS)
++#define SDCLK_POLARITY_POS                 3
++#define SDCLK_POLARITY_BITS                BITS1
++#define SDCLK_POLARITY                     (SDCLK_POLARITY_BITS<<SDCLK_POLARITY_POS)
++#define FSCLK_DIVISOR_POS                  4
++#define FSCLK_DIVISOR_BITS                 BITS10
++#define FSCLK_DIVISOR                      (FSCLK_DIVISOR_BITS<<FSCLK_DIVISOR_POS)
++
++/* CMDCTL_REG bit definitions */
++#define MODE_POS               0
++#define MODE_BITS              BITS1
++#define MODE                   (MODE_BITS << MODE_POS)
++#define AUTOCMD12EN_POS        2
++#define AUTOCMD12EN_BITS       BITS1
++#define AUTOCMD12EN            (AUTOCMD12EN_BITS << AUTOCMD12EN_POS)
++#define DIRECTION_POS          4
++#define DIRECTION_BITS         BITS1
++#define DIRECTION              (DIRECTION_BITS  << DIRECTION_POS)
++#define MULTIBLOCK_POS         5
++#define MULTIBLOCK_BITS        BITS1
++#define MULTIBLOCK             (MULTIBLOCK_BITS << MULTIBLOCK_POS)
++#define RESPTYPE_POS           16
++#define RESPTYPE_BITS          BITS2
++#define RESPTYPE               (RESPTYPE_BITS << RESPTYPE_POS)
++#define CRCCHECKENABLE_POS     19
++#define CRCCHECKENABLE_BITS    BITS1
++#define CRCCHECKENABLE         (CRCCHECKENABLE_BITS << CRCCHECKENABLE_POS)
++#define CMDINDEXCHECK_POS      20
++#define CMDINDEXCHECK_BITS     BITS1
++#define CMDINDEXCHECK          (CMDINDEXCHECK_BITS << CMDINDEXCHECK_POS)
++#define DATAPRESENT_POS        21
++#define DATAPRESENT_BITS       BITS1
++#define DATAPRESENT            (DATAPRESENT_BITS << DATAPRESENT_POS)
++#define CMDINDEX_POS           24
++#define CMDINDEX_BITS          BITS6
++#define CMDINDEX               (CMDINDEX_BITS << CMDINDEX_POS)
++#define CMDSET_POS             31
++#define CMDSET_BITS            BITS1
++#define CMDSET                 (CMDSET_BITS << CMDSET_POS)
++
++/* LMEMADDR_REG bit definitions */
++#define LMEM_FREE_PTR_POS                  0
++#define LMEM_FREE_PTR_BITS                 BITS10
++#define LMEM_FREE_PTR                      (LMEM_FREE_PTR_BITS << LMEM_FREE_PTR_POS)
++#define LMEM_DATA_PTR_POS                  16
++#define LMEM_DATA_PTR_BITS                 BITS10
++#define LMEM_DATA_PTR                      (LMEM_DATA_PTR_BITS << LMEM_DATA_PTR_POS)
++
++/* LMEMCNT_REG bit definitions */
++#define LMEM_ALLOCATED_PG_CNT_POS          0
++#define LMEM_ALLOCATED_PG_CNT_BITS         BITS16
++#define LMEM_ALLOCATED_PG_CNT              (LMEM_ALLOCATED_PG_CNT_BITS << LMEM_ALLOCATED_PG_CNT_POS)
++#define LMEM_VALID_DATA_PAGES_CNT_POS      16
++#define LMEM_VALID_DATA_PAGES_CNT_BITS     BITS16
++#define LMEM_VALID_DATA_PAGES_CNT          (LMEM_VALID_DATA_PAGES_CNT_BITS << LMEM_VALID_DATA_PAGES_CNT_POS)
++
++/* LMEMCFG_REG bit definitions */
++#define LMEM_PAGE_SIZE_DWORDS_POS          0
++#define LMEM_PAGE_SIZE_DWORDS_BITS         BITS8
++#define LMEM_PAGE_SIZE_DWORDS              (LMEM_PAGE_SIZE_DWORDS_BITS << LMEM_PAGE_SIZE_DWORDS_POS)
++#define LMEM_MAX_NUM_PAGES_POS             8
++#define LMEM_MAX_NUM_PAGES_BITS            BITS11
++#define LMEM_MAX_NUM_PAGES                 (LMEM_MAX_NUM_PAGES_BITS << LMEM_MAX_NUM_PAGES_POS)
++
++/* LMEMCTL_REG bit definitions */
++#define LMEM_FREE_PAGE_LOW_WM_POS          16
++#define LMEM_FREE_PAGE_LOW_WM_BITS         BITS8
++#define LMEM_FREE_PAGE_LOW_WM              (LMEM_FREE_PAGE_LOW_WM_BITS << LMEM_FREE_PAGE_LOW_WM_POS)
++#define LMEM_FREE_PAGE_HIGH_WM_POS         24
++#define LMEM_FREE_PAGE_HIGH_WM_BITS        BITS8
++#define LMEM_FREE_PAGE_HIGH_WM             (LMEM_FREE_PAGE_HIGH_WM_BITS << LMEM_FREE_PAGE_HIGH_WM_POS)
++
++/* LMEMSTATUS_REG bit definitions */
++#define LMEM_COMPLETION_PTR_POS            0
++#define LMEM_COMPLETION_PTR_BITS           BITS10
++#define LMEM_COMPLETION_PTR                (LMEM_COMPLETION_PTR_BITS << LMEM_COMPLETION_PTR_POS)
++#define LMEM_ALL_PAGES_ALLOCATED_POS       17
++#define LMEM_ALL_PAGES_ALLOCATED_BITS      BITS1
++#define LMEM_ALL_PAGES_ALLOCATED           (LMEM_ALL_PAGES_ALLOCATED_BITS << LMEM_ALL_PAGES_ALLOCATED_POS)
++
++/* LTXSTS_REG bit definitions */
++#define LMEM_PG_VALID_EMPTY_POS            12
++#define LMEM_PG_VALID_EMPTY_BITS           BITS1
++#define LMEM_PG_VALID_EMPTY                (LMEM_PG_VALID_EMPTY_BITS << LMEM_PG_VALID_EMPTY_POS)
++
++#define EXPECT_AUTOCMD12_INTR   0x1
++#define EXPECT_DATA_INTR        0x2
++#define EXPECT_CMD_INTR         0x4
++#define EXPECT_NO_INTR_PIO      0xFFFFFFF0
++#define SDHC0   0
++#define SDHC1   1
++#define EMMC    2
++
++/* Response Type */
++#define RESP_NONE              0x0
++#define RESP_136BIT            0x1
++#define RESP_48BIT             0x2
++#define RESP_48BIT_BUSY        0x3
++
++/* BLKCTL_REG bit definitions */
++#define BLKLEN_POS      0
++#define BLKLEN_BITS     BITS12
++#define BLKLEN          (BLKLEN_BITS << BLKLEN_POS)
++#define BLKCNT_POS      12
++#define BLKCNT_BITS     BITS9
++#define BLKCNT          (BLKCNT_BITS << BLKCNT_POS)
++
++/* Clock Divisor values */
++#define PILOT_SDHC_CLK_400KHz   0x0FA
++#define PILOT_SDHC_CLK_20MHz    0x006
++#define PILOT_SDHC_CLK_25MHz    0x004
++#define PILOT_SDHC_CLK_50MHz    0x002
++
++struct dma_desc
++{
++	volatile unsigned int_enb: 1;       //Enable Interrupt
++	volatile unsigned chain: 1;         //0-last entry, 1-NOT last entry
++	volatile unsigned dir: 1;           //0-SDHC-DDR, 1-DDR-SDHC
++	volatile unsigned crc_en: 1;        //Enable CRC
++	volatile unsigned rsvd1: 4;
++	volatile unsigned len: 24;          //Max 16MB
++	volatile unsigned long crc_addr;    //CRC address
++	volatile unsigned long data_addr;   //src/dest Address
++	volatile unsigned long rsvd2;
++};
++
++struct pilot_sdhc_host
++{
++	struct mmc_host *mmc;
++	struct mmc_request *mrq;
++	struct mmc_command      *cmd;
++	struct mmc_data         *data;
++	struct mmc_command      *stop;
++
++	u32 id;
++	u32 expected_irqs;
++	u32 flags;
++	u32 iobase;
++	u32 irq;
++	struct platform_device *pdev;
++	u32 clock;
++	u32 bus_width;
++	u32 power_mode;
++
++	int status;
++
++	struct
++	{
++		int len;
++		int dir;
++	} dma;
++
++	struct
++	{
++		int index;
++		int offset;
++		int len;
++	} pio;
++
++	u32 tx_chan;
++	u32 rx_chan;
++
++	struct tasklet_struct finish_task;
++	struct tasklet_struct card_task;
++	spinlock_t lock;
++	unsigned long timer_val;
++	struct timer_list timer;
++	unsigned long timed_out;
++	unsigned long timer_added;
++	/* LMEM registers for SD */
++	unsigned long lmem_v;
++	unsigned long lmem_p;
++
++	struct dma_desc *gstruc;
++	struct dma_desc *astru;
++	dma_addr_t dma_addr;
++
++};

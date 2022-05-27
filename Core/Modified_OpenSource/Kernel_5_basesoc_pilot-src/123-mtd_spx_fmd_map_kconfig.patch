@@ -1,0 +1,18 @@
+--- linux-5.4.99/drivers/mtd/maps/Kconfig	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/mtd/maps/Kconfig	2021-03-23 15:21:03.404482558 +0800
+@@ -278,6 +278,15 @@
+ 	  Mapping for the Flaga digital module. If you don't have one, ignore
+ 	  this setting.
+ 
++config MTD_RACTRENDS
++	tristate "Map driver for AMI Ractrends Based boards"
++	default y
++	select MTD_FMHCORE
++	select MTD_PARTITIONS
++	help
++	  Map driver for AMI Ractrends Based boards.
++
++
+ config MTD_SOLUTIONENGINE
+ 	tristate "CFI Flash device mapped on Hitachi SolutionEngine"
+ 	depends on SOLUTION_ENGINE && MTD_CFI && MTD_REDBOOT_PARTS

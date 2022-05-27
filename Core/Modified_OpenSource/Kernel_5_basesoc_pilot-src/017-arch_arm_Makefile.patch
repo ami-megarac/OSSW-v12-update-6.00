@@ -1,0 +1,10 @@
+--- linux-5.4.99/arch/arm/Makefile	2021-02-17 17:35:20.000000000 +0800
++++ linux/arch/arm/Makefile	2021-03-23 14:02:18.757566393 +0800
+@@ -207,6 +207,7 @@
+ machine-$(CONFIG_ARCH_PXA)		+= pxa
+ machine-$(CONFIG_ARCH_QCOM)		+= qcom
+ machine-$(CONFIG_ARCH_RDA)		+= rda
++machine-$(CONFIG_ARCH_PILOT4)      += pilot4_asic
+ machine-$(CONFIG_ARCH_REALVIEW)		+= realview
+ machine-$(CONFIG_ARCH_ROCKCHIP)		+= rockchip
+ machine-$(CONFIG_ARCH_RPC)		+= rpc

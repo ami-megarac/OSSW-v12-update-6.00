@@ -1,0 +1,19 @@
+--- uboot/oem/ami/fmh/cmd_fmh.c	2022-01-07 17:53:24.958869961 +0530
++++ uboot_new/oem/ami/fmh/cmd_fmh.c	2022-01-07 17:53:34.214906749 +0530
+@@ -1245,9 +1245,13 @@
+ 		/* Extract Module information and module name */
+ 		mod = &(fmh->Module_Info);
+ 	
+-	#ifdef CONFIG_SPX_FEATURE_SECURE_BOOT_SUPPORT
+-                retval = hrot_update(mod->Module_Type, mod->Module_Name, le32_to_host(mod->Module_Location), le32_to_host(fmh->FMH_AllocatedSize), le32_to_host(fmh->FMH_Location), startaddress);
+-                if(retval){
++#ifdef CONFIG_SPX_FEATURE_SECURE_BOOT_SUPPORT
++		#ifdef CONFIG_SPX_FEATURE_CONTIGIOUS_SPI_MEMORY
++			retval = hrot_update(mod->Module_Type, mod->Module_Name,startaddress+ le32_to_host(mod->Module_Location), le32_to_host(fmh->FMH_AllocatedSize),startaddress+ le32_to_host(fmh->FMH_Location), startaddress);
++		#else
++			retval = hrot_update(mod->Module_Type, mod->Module_Name, le32_to_host(mod->Module_Location), le32_to_host(fmh->FMH_AllocatedSize), le32_to_host(fmh->FMH_Location), startaddress);
++		#endif		
++		if(retval){
+ 		#ifdef CONFIG_SPX_FEATURE_FAIL_SAFE_BOOTING
+ 			while(true)
+                         {

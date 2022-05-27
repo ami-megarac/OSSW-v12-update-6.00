@@ -1,0 +1,11 @@
+--- linux-5.4.99/arch/arm/Kconfig	2021-02-17 17:35:20.000000000 +0800
++++ linux/arch/arm/Kconfig	2021-03-23 13:51:44.054813337 +0800
+@@ -703,6 +703,8 @@
+ 
+ source "arch/arm/mach-rda/Kconfig"
+ 
++source "arch/arm/mach-pilot4_asic/Kconfig"
++
+ source "arch/arm/mach-realview/Kconfig"
+ 
+ source "arch/arm/mach-rockchip/Kconfig"

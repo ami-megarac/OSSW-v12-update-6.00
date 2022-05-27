@@ -1,0 +1,18 @@
+--- linux-5.4.99/drivers/clocksource/Kconfig	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/clocksource/Kconfig	2021-03-23 14:05:15.674506506 +0800
+@@ -398,6 +398,15 @@
+ 	select CLKSRC_MMIO
+ 	select TIMER_OF if OF
+ 
++config PILOT4_TIMER
++	bool "Pilot4 initial sys tick timer"
++	depends on GENERIC_SCHED_CLOCK && CLKDEV_LOOKUP && ARCH_PILOT4
++	select CLKSRC_MMIO
++	select CLKSRC_OF if OF
++	help
++	  Enable this option to use the tick timer of pilot4
++	  as initial clocksource.
++
+ config CLKSRC_ARM_GLOBAL_TIMER_SCHED_CLOCK
+ 	bool
+ 	depends on ARM_GLOBAL_TIMER

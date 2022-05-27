@@ -1,0 +1,9 @@
+--- linux-5.4.99/arch/arm/mach-pilot4_asic/Makefile	2021-03-23 13:57:12.617764917 +0800
++++ linux/arch/arm/mach-pilot4_asic/Makefile	2021-03-19 17:18:44.831976700 +0800
+@@ -0,0 +1,6 @@
++obj-y			:= setup.o pilot4_fb.o
++obj-$(CONFIG_PILOT4_PCIE_RC) += pilot4-pci.o
++obj-$(CONFIG_SMP)               += platsmp.o
++obj-m			:=
++obj-n			:=
++obj-			:=

@@ -1,0 +1,7 @@
+--- linux-5.4.99/drivers/mtd/maps/Makefile	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/mtd/maps/Makefile	2021-03-23 15:21:50.515105730 +0800
+@@ -44,3 +44,4 @@
+ obj-$(CONFIG_MTD_RBTX4939)	+= rbtx4939-flash.o
+ obj-$(CONFIG_MTD_VMU)		+= vmu-flash.o
+ obj-$(CONFIG_MTD_LANTIQ)	+= lantiq-flash.o
++obj-$(CONFIG_MTD_RACTRENDS)     += ractrends.o

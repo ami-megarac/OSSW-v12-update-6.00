@@ -1,0 +1,118 @@
+--- linux-5.4.99/arch/arm/kernel/smp.c	2021-02-17 17:35:20.000000000 +0800
++++ linux/arch/arm/kernel/smp.c	2021-03-23 13:54:15.076823190 +0800
+@@ -77,6 +77,9 @@
+ 	 * not be usable by the kernel. Please keep the above limited
+ 	 * to at most 8 entries.
+ 	 */
++#ifdef CONFIG_MACH_PILOT4_ASIC
++   IPI_WFE,
++#endif
+ };
+ 
+ static DECLARE_COMPLETION(cpu_running);
+@@ -510,7 +513,7 @@
+ 		__smp_cross_call = fn;
+ }
+ 
+-static const char *ipi_types[NR_IPI] __tracepoint_string = {
++static const char *ipi_types[] __tracepoint_string = {
+ #define S(x,s)	[x] = s
+ 	S(IPI_WAKEUP, "CPU wakeup interrupts"),
+ 	S(IPI_TIMER, "Timer broadcast interrupts"),
+@@ -519,6 +522,9 @@
+ 	S(IPI_CPU_STOP, "CPU stop interrupts"),
+ 	S(IPI_IRQ_WORK, "IRQ work interrupts"),
+ 	S(IPI_COMPLETION, "completion interrupts"),
++#ifdef CONFIG_MACH_PILOT4_ASIC
++    S(IPI_WFE, "Wfe interrupts"),
++#endif
+ };
+ 
+ static void smp_cross_call(const struct cpumask *target, unsigned int ipinr)
+@@ -601,11 +607,18 @@
+ 
+ 	local_fiq_disable();
+ 	local_irq_disable();
+-
++#ifdef CONFIG_MACH_PILOT4_ASIC
++   raw_spin_lock(&stop_lock);
++   printk(KERN_CRIT "CPU%u: WFE\n", cpu);
++   raw_spin_unlock(&stop_lock);
++   while (1)
++       wfe();
++#else
+ 	while (1) {
+ 		cpu_relax();
+ 		wfe();
+ 	}
++#endif
+ }
+ 
+ static DEFINE_PER_CPU(struct completion *, cpu_completion);
+@@ -655,6 +668,17 @@
+ 		scheduler_ipi();
+ 		break;
+ 
++#ifdef CONFIG_MACH_PILOT4_ASIC
++   case IPI_WFE:
++#ifdef CONFIG_USE_SSP_RESET
++       local_irq_disable();
++#endif
++       printk("core1 going to wfe\n");
++       for(;;)
++           wfe();
++       break;
++#endif
++
+ 	case IPI_CALL_FUNC:
+ 		irq_enter();
+ 		generic_smp_call_function_interrupt();
+@@ -700,6 +724,48 @@
+ 	set_irq_regs(old_regs);
+ }
+ 
++#ifdef CONFIG_MACH_PILOT4_ASIC
++void smp_send_wfe(int cpu)
++{
++   smp_cross_call(cpumask_of(cpu), IPI_WFE);
++}
++EXPORT_SYMBOL(smp_send_wfe);
++
++
++extern unsigned int * IO_ADDRESS(unsigned int);
++
++void execute_smp_wfe(void)
++{
++   int cpu;
++   int i = 0x0;
++   u32 wfe_status;
++
++   cpu = task_cpu(current);
++
++   printk("Entered %s cpu %d\n", __FUNCTION__, cpu);
++
++   for_each_online_cpu(cpu) {
++       if (cpu == smp_processor_id())
++           continue;
++       printk("sending wfe to %d cpu\n", cpu);
++       smp_send_wfe(cpu);
++#ifndef CONFIG_USE_SSP_RESET
++       for(i = 0; i < 0xFFFFF; i++) {
++           wfe_status = *(volatile unsigned int *)IO_ADDRESS(0x40100D00);
++           printk("wfe_status %x\n", wfe_status);
++           if(!(wfe_status & (1<<27)))
++               continue;
++           break;
++      }
++#endif
++   }
++}
++EXPORT_SYMBOL(execute_smp_wfe);
++#endif
++
++
++
++
+ void smp_send_reschedule(int cpu)
+ {
+ 	smp_cross_call(cpumask_of(cpu), IPI_RESCHEDULE);

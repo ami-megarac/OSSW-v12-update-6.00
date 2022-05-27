@@ -1,0 +1,13 @@
+--- linux-5.4.99/arch/arm/include/asm/smp.h	2021-02-17 17:35:20.000000000 +0800
++++ linux/arch/arm/include/asm/smp.h	2021-03-23 11:48:02.658866429 +0800
+@@ -39,6 +39,10 @@
+  */
+ extern void smp_init_cpus(void);
+ 
++#ifdef CONFIG_MACH_PILOT4_ASIC
++extern void smp_send_wfe(int cpu);
++extern void execute_smp_wfe(void);
++#endif
+ 
+ /*
+  * Provide a function to raise an IPI cross call on CPUs in callmap.

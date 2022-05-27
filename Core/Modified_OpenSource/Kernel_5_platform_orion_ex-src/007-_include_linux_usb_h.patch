@@ -1,0 +1,12 @@
+--- linux/include/linux/usb.h	2021-02-17 17:35:20.000000000 +0800
++++ linux_new/include/linux/usb.h	2021-04-26 17:53:38.654453000 +0800
+@@ -708,6 +708,9 @@
+ 	unsigned lpm_disable_count;
+ 
+ 	u16 hub_delay;
++#if defined(CONFIG_USB_PILOT4_HCD) || defined(CONFIG_USB_PILOT4_HCD_MODULE)
++        u8 rqrd_bulk_in_eps, rqrd_bulk_out_eps, rqrd_intr_in_eps, rqrd_intr_out_eps;
++#endif
+ };
+ #define	to_usb_device(d) container_of(d, struct usb_device, dev)
+ 

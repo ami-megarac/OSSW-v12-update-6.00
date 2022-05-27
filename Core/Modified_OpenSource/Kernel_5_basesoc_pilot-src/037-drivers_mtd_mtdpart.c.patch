@@ -1,0 +1,22 @@
+--- linux_org/drivers/mtd/mtdpart.c	2021-10-20 09:40:18.000000000 +0000
++++ linux/drivers/mtd/mtdpart.c	2022-02-10 11:50:43.653101700 +0000
+@@ -1029,11 +1029,18 @@
+ 	int ispart = 0;
+ 
+ 	mutex_lock(&mtd_partitions_mutex);
+-	list_for_each_entry(part, &mtd_partitions, list)
++	list_for_each_entry(part, &mtd_partitions, list);
++	/* 
++	   add_mtd_partitions() creates and registers slave MTD objects which are bound to the master according to the partition definitions.
++	   When we want to create a new partition , partition data retrieve from mtd0.
++	   Then mtd_is_partition() judge the mtd0 partition device is slave or not. If yes , creating new partition fail.
++	   Because the mtd0 partition "fullpart" is set as slave device in ractrends.c file, 
++	   that the reason why neoncity create new partition fail during firmware upgrade. 
+ 		if (&part->mtd == mtd) {
+ 			ispart = 1;
+ 			break;
+ 		}
++	*/
+ 	mutex_unlock(&mtd_partitions_mutex);
+ 
+ 	return ispart;

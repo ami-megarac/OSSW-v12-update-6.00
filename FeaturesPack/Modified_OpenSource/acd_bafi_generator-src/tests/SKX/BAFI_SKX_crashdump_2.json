@@ -1,0 +1,252 @@
+{
+    "summary": {
+        "MCA": {
+            "socket0": [
+                {
+                    "Address": "0x00000000",
+                    "Bank": "3 (MLC)",
+                    "CTL": "0x0000001f",
+                    "Core": 0,
+                    "Misc": "0x00000000",
+                    "Status": "0xbe00000000800400",
+                    "Status_decoded": {
+                        "ADDRV": "0x1",
+                        "CORRECTED_ERROR_COUNT": "0x00",
+                        "CORR_ERR_STATUS_IND": "0x0",
+                        "CORR_ERR_STATUS_IND_decoded": "No hardware status tracking is provided for the structure reporting this event",
+                        "EN": "0x1",
+                        "MCACOD": "0x400",
+                        "MCACOD_decoded": "Watchdog Timer (3-strike timeout) Error",
+                        "MISCV": "0x1",
+                        "MSCOD": "0x80",
+                        "MSCOD_decoded": "Watchdog timer (3-strike) Error",
+                        "OVERFLOW": "0x0",
+                        "PCC": "0x1",
+                        "RESERVED0": "0x0",
+                        "RESERVED1": "0x0",
+                        "UC": "0x1",
+                        "VALID": "0x1"
+                    },
+                    "Thread": 0
+                },
+                {
+                    "Address": "0x00000000",
+                    "Bank": "6 (UBOX)",
+                    "CTL": "0x00000003",
+                    "Core": 0,
+                    "Misc": "0x3a000000",
+                    "Status": "0xbb80000000000e0b",
+                    "Status_decoded": {
+                        "ADDRV": "0x0",
+                        "AR": "0x1",
+                        "CORRECTED_ERROR_COUNT": "0x00",
+                        "CORR_ERR_STATUS_IND": "0x0",
+                        "CORR_ERR_STATUS_IND_decoded": "No hardware status tracking is provided for the structure reporting this event",
+                        "EN": "0x1",
+                        "MCACOD": "0xe0b",
+                        "MCACOD_decoded": "Generic I/O Error on Bus[0x3a] Device[0x0] Function[0x0] from Segment[0x0]",
+                        "MISCV": "0x1",
+                        "MSCOD": "0x00",
+                        "MSCOD_decoded": "This value is always 0",
+                        "OTHER_INFO": "0x0",
+                        "OVERFLOW": "0x0",
+                        "PCC": "0x1",
+                        "S": "0x1",
+                        "UC": "0x1",
+                        "VALID": "0x1"
+                    },
+                    "Thread": 0
+                },
+                {
+                    "Address": "0x800e0000",
+                    "Bank": "9 (CHA_A)",
+                    "CTL": "0xffb7fdff",
+                    "Core": 0,
+                    "Misc": "0x27caa600400086",
+                    "Status": "0xfe200000000c110a",
+                    "Status_decoded": {
+                        "ADDRV": "0x1",
+                        "AR": "0x0",
+                        "CORRECTED_ERROR_COUNT": "0x00",
+                        "CORR_ERR_STATUS_IND": "0x1",
+                        "CORR_ERR_STATUS_IND_decoded": "Green - The current status is green (below threshold) for the structure posting the event",
+                        "EN": "0x1",
+                        "MCACOD": "0x110a",
+                        "MCACOD_decoded": "Cache_Hierarchy_Error|GENERIC_ERROR|GENERIC_ERROR_TRANSACTION_TYPE|LEVEL_2 (L3/LLC cache)",
+                        "MISCV": "0x1",
+                        "MSCOD": "0x0c",
+                        "MSCOD_decoded": "TOR_TIMEOUT_OriginalReq[PortIn]_TorID[21]",
+                        "OTHER_INFO": "0x0",
+                        "OVERFLOW": "0x1",
+                        "PCC": "0x1",
+                        "S": "0x0",
+                        "UC": "0x1",
+                        "VALID": "0x1"
+                    },
+                    "Thread": 0
+                },
+                {
+                    "Address": "0x800e0000 (MMCFG)",
+                    "Bank": "CHA0",
+                    "CTL": "0xffb7fdff",
+                    "Core": 0,
+                    "Misc": "0x27caa600400086",
+                    "Status": "0xfe200000000c110a",
+                    "Status_decoded": {
+                        "ADDRV": "0x1",
+                        "AR": "0x0",
+                        "CORRECTED_ERROR_COUNT": "0x00",
+                        "CORR_ERR_STS_IND": "0x1",
+                        "CORR_ERR_STS_IND_decoded": "Green - The current status is green (below threshold) for the structure posting the event",
+                        "EN": "0x1",
+                        "MCACOD": "0x110a",
+                        "MCACOD_decoded": "Cache_Hierarchy_Error|GENERIC_ERROR|GENERIC_ERROR_TRANSACTION_TYPE|LEVEL_2 (L3/LLC cache)",
+                        "MISCV": "0x1",
+                        "MSCOD": "0x0c",
+                        "MSCOD_decoded": "TOR_TIMEOUT_OriginalReq[PortIn]_TorID[21]",
+                        "OTHER_INFO": "0x0",
+                        "OVERFLOW": "0x1",
+                        "PCC": "0x1",
+                        "S": "0x0",
+                        "UC": "0x1",
+                        "VALID": "0x1"
+                    },
+                    "Thread": 0
+                }
+            ],
+            "socket1": [
+                {
+                    "Address": "0x00000000",
+                    "Bank": "12 (Intel UPI 1)",
+                    "CTL": "0x803f001f",
+                    "Core": 0,
+                    "Misc": "0x200000e0200ffbe1",
+                    "Status": "0x8800004000300e0f",
+                    "Status_decoded": {
+                        "ADDRV": "0x0",
+                        "AR": "0x0",
+                        "CORRECTED_ERROR_COUNT": "0x01",
+                        "CORR_ERR_STATUS_IND": "0x0",
+                        "CORR_ERR_STATUS_IND_decoded": "No hardware status tracking is provided for the structure reporting this event",
+                        "EN": "0x0",
+                        "MCACOD": "0xe0f",
+                        "MCACOD_decoded": "For all other corrected and uncorrected errors",
+                        "MISCV": "0x1",
+                        "MSCOD": "0x30",
+                        "MSCOD_SPARE": "0x00",
+                        "MSCOD_SPARE_decoded": "",
+                        "MSCOD_decoded": "COR LL Rx detected CRC error: successful LLR without Phy Reinit",
+                        "OTHER_INFO": "0x0",
+                        "OVERFLOW": "0x0",
+                        "PCC": "0x0",
+                        "S": "0x0",
+                        "UC": "0x0",
+                        "VALID": "0x1"
+                    },
+                    "Thread": 0
+                },
+                {
+                    "Address": "0x00000000",
+                    "Bank": "5 (Intel UPI 0)",
+                    "CTL": "0x803f001f",
+                    "Core": 0,
+                    "Misc": "0x200000e0200ffbe1",
+                    "Status": "0x8800004000300e0f",
+                    "Status_decoded": {
+                        "ADDRV": "0x0",
+                        "AR": "0x0",
+                        "CORRECTED_ERROR_COUNT": "0x01",
+                        "CORR_ERR_STATUS_IND": "0x0",
+                        "CORR_ERR_STATUS_IND_decoded": "No hardware status tracking is provided for the structure reporting this event",
+                        "EN": "0x0",
+                        "MCACOD": "0xe0f",
+                        "MCACOD_decoded": "For all other corrected and uncorrected errors",
+                        "MISCV": "0x1",
+                        "MSCOD": "0x30",
+                        "MSCOD_SPARE": "0x00",
+                        "MSCOD_SPARE_decoded": "",
+                        "MSCOD_decoded": "COR LL Rx detected CRC error: successful LLR without Phy Reinit",
+                        "OTHER_INFO": "0x0",
+                        "OVERFLOW": "0x0",
+                        "PCC": "0x0",
+                        "S": "0x0",
+                        "UC": "0x0",
+                        "VALID": "0x1"
+                    },
+                    "Thread": 0
+                }
+            ]
+        },
+        "TOR": {
+            "socket0": [
+                {
+                    "Decoded": {
+                        "BDF": "Bus: 0x0, Device: 0x1c, Function: 0x0",
+                        "Description": "PCI-to-PCI Bridge",
+                        "ErrorSubType": "Type 1: PCIe* MMCFG access cause TOR Timeout",
+                        "ErrorType": "TOR Timeout Error",
+                        "Port": "PCI0"
+                    },
+                    "Details": {
+                        "Address": "0x800e0000 (MMCFG)",
+                        "CHA": "0x0",
+                        "CoreId": "0x0",
+                        "IDX": "0x15",
+                        "InPipe": "0x0",
+                        "LLC": "0x8",
+                        "LLC_decoded": "LLC_I",
+                        "Request": "0x27c",
+                        "Request_decoded": "PortIn",
+                        "Retry": "0x0",
+                        "SAD": "0x2",
+                        "SAD_decoded": "CFG",
+                        "Target": "0x14",
+                        "Target_decoded": "PCI0",
+                        "ThreadId": "0x0",
+                        "TorFSMState": "0x0"
+                    },
+                    "First_IERR": true,
+                    "First_MCERR": true
+                }
+            ],
+            "socket1": []
+        },
+        "output_summary": {
+            "socket0": [
+                {
+                    "MCE": {
+                        "bank 3 (MLC) MCACOD: 0x400, MSCOD: 0x80": "MCACOD_decoded: Watchdog Timer (3-strike timeout) Error, MSCOD_decoded: Watchdog timer (3-strike) Error",
+                        "bank 6 (UBOX) MCACOD: 0xe0b, MSCOD: 0x00": "MCACOD_decoded: Generic I/O Error on Bus[0x3a] Device[0x0] Function[0x0] from Segment[0x0], MSCOD_decoded: This value is always 0",
+                        "bank 9 (CHA_A) MCACOD: 0x110a, MSCOD: 0x0c": "MCACOD_decoded: Cache_Hierarchy_Error|GENERIC_ERROR|GENERIC_ERROR_TRANSACTION_TYPE|LEVEL_2 (L3/LLC cache), MSCOD_decoded: TOR_TIMEOUT_OriginalReq[PortIn]_TorID[21]",
+                        "bank CHA0 MCACOD: 0x110a, MSCOD: 0x0c": "MCACOD_decoded: Cache_Hierarchy_Error|GENERIC_ERROR|GENERIC_ERROR_TRANSACTION_TYPE|LEVEL_2 (L3/LLC cache), MSCOD_decoded: TOR_TIMEOUT_OriginalReq[PortIn]_TorID[21]"
+                    }
+                },
+                {
+                    "Errors_Per_Socket": "IntMSMI, FirstIERR = CHA0, bank 9, FirstMCERR = CHA0, bank 9"
+                },
+                {
+                    "First_MCERR": {
+                        "Address": "0x800e0000 (MMCFG)",
+                        "BDF": "Bus: 0x0, Device: 0x1c, Function: 0x0",
+                        "CHA": "0x0",
+                        "Description": "PCI-to-PCI Bridge",
+                        "ErrorSubType": "Type 1: PCIe* MMCFG access cause TOR Timeout",
+                        "ErrorType": "TOR Timeout Error",
+                        "Port": "PCI0"
+                    }
+                }
+            ],
+            "socket1": [
+                {
+                    "MCE": {
+                        "bank 12 (Intel UPI 1) MCACOD: 0xe0f, MSCOD: 0x30": "MCACOD_decoded: For all other corrected and uncorrected errors, MSCOD_decoded: COR LL Rx detected CRC error: successful LLR without Phy Reinit",
+                        "bank 5 (Intel UPI 0) MCACOD: 0xe0f, MSCOD: 0x30": "MCACOD_decoded: For all other corrected and uncorrected errors, MSCOD_decoded: COR LL Rx detected CRC error: successful LLR without Phy Reinit"
+                    }
+                },
+                {
+                    "Errors_Per_Socket": "ExtMSMI, FirstIERR = 0x0, FirstMCERR = PCU, bank 4, FirstMCERR value doesn't match any MCE bank#, manual review may be required"
+                }
+            ]
+        }
+    }
+}

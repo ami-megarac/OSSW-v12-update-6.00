@@ -1,0 +1,103 @@
+diff -Naur linux_old/drivers/i2c/i2c-core-base.c linux/drivers/i2c/i2c-core-base.c
+--- linux_old/drivers/i2c/i2c-core-base.c	2021-12-03 14:47:25.503575000 +0800
++++ linux/drivers/i2c/i2c-core-base.c	2021-12-13 15:04:48.806936075 +0800
+@@ -2334,6 +2334,15 @@
+ {
+ 	struct i2c_adapter *adapter;
+ 
++	if (in_atomic() || irqs_disabled())
++	{
++		int ret;
++		ret = mutex_trylock(&core_lock);
++
++		if (!ret)
++			return NULL;
++	}
++	else
+ 	mutex_lock(&core_lock);
+ 	adapter = idr_find(&i2c_adapter_idr, nr);
+ 	if (!adapter)
+@@ -2427,19 +2436,19 @@
+            {
+                if (in_atomic() || irqs_disabled())
+                {
+-                   ret = rt_mutex_trylock(&adap->bus_lock);
++			       ret = mutex_trylock(&core_lock);
+                    if (!ret)
+                    {
+                        i2c_put_adapter(adap);
+                        continue;
+                    }
+-               }
+-               else
+-               {
+-                   rt_mutex_lock(&adap->bus_lock);
+-               }
+-               ret = adap->algo->i2c_recovery(adap);
+-               rt_mutex_unlock(&adap->bus_lock);
++							}
++             else
++              {
++                  mutex_lock(&core_lock);
++              }
++							adap->algo->i2c_recovery(adap);
++							mutex_unlock(&core_lock);
+            }
+            i2c_put_adapter(adap);
+        }
+diff -Naur linux_old/drivers/i2c/i2c-dev.c linux/drivers/i2c/i2c-dev.c
+--- linux_old/drivers/i2c/i2c-dev.c	2021-12-03 14:47:25.503575000 +0800
++++ linux/drivers/i2c/i2c-dev.c	2021-12-03 15:32:00.000000000 +0800
+@@ -44,6 +44,11 @@
+ 	struct cdev cdev;
+ };
+ 
++
++#ifdef I2C_BUS_RECOVERY
++static struct 	timer_list poll_timer;
++#endif
++
+ #define I2C_MINORS	(MINORMASK + 1)
+ static LIST_HEAD(i2c_dev_list);
+ static DEFINE_SPINLOCK(i2c_dev_list_lock);
+@@ -512,6 +517,15 @@
+ 	return 0;
+ }
+ 
++#ifdef I2C_BUS_RECOVERY
++static void recover_i2c_bus (struct timer_list *timer)
++{
++	i2c_recovery_event ();
++	mod_timer(&poll_timer,jiffies +(10000 * HZ)/1000);
++	return;
++}
++#endif
++
+ #ifdef CONFIG_COMPAT
+ 
+ struct i2c_smbus_ioctl_data32 {
+@@ -764,6 +778,12 @@
+ 	/* Bind to already existing adapters right away */
+ 	i2c_for_each_dev(NULL, i2cdev_attach_adapter);
+ 
++#ifdef I2C_BUS_RECOVERY
++	timer_setup(&poll_timer, recover_i2c_bus, 0);
++	poll_timer.expires = jiffies + 500 * HZ/1000;  
++	add_timer(&poll_timer); 
++#endif
++
+ 	return 0;
+ 
+ out_unreg_class:
+@@ -772,6 +792,11 @@
+ 	unregister_chrdev_region(MKDEV(I2C_MAJOR, 0), I2C_MINORS);
+ out:
+ 	printk(KERN_ERR "%s: Driver Initialisation failed\n", __FILE__);
++
++#ifdef I2C_BUS_RECOVERY
++	del_timer(&poll_timer);
++#endif
++
+ 	return res;
+ }
+ 

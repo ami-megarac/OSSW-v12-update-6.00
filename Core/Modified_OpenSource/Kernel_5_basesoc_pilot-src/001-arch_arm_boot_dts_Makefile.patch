@@ -1,0 +1,10 @@
+--- linux-5.4.99/arch/arm/boot/dts/Makefile	2021-02-17 17:35:20.000000000 +0800
++++ linux/arch/arm/boot/dts/Makefile	2021-03-23 10:30:23.604033176 +0800
+@@ -1277,6 +1277,7 @@
+ 	mt8135-evbp1.dtb
+ dtb-$(CONFIG_ARCH_MILBEAUT) += milbeaut-m10v-evb.dtb
+ dtb-$(CONFIG_ARCH_ZX) += zx296702-ad1.dtb
++dtb-$(CONFIG_ARCH_PILOT4) += pilot4_asic.dtb
+ dtb-$(CONFIG_ARCH_ASPEED) += \
+ 	aspeed-ast2500-evb.dtb \
+ 	aspeed-ast2600-evb.dtb \

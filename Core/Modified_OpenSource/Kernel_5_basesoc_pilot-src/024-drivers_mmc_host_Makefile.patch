@@ -1,0 +1,10 @@
+--- linux-5.4.99/drivers/mmc/host/Makefile	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/mmc/host/Makefile	2021-03-23 14:30:45.843604542 +0800
+@@ -11,6 +11,7 @@
+ obj-$(CONFIG_MMC_MXC)		+= mxcmmc.o
+ obj-$(CONFIG_MMC_MXS)		+= mxs-mmc.o
+ obj-$(CONFIG_MMC_SDHCI)		+= sdhci.o
++obj-$(CONFIG_PILOT4_SDHC)   += pilot_sdhc.o
+ obj-$(CONFIG_MMC_SDHCI_PCI)	+= sdhci-pci.o
+ sdhci-pci-y			+= sdhci-pci-core.o sdhci-pci-o2micro.o sdhci-pci-arasan.o \
+ 				   sdhci-pci-dwc-mshc.o sdhci-pci-gli.o

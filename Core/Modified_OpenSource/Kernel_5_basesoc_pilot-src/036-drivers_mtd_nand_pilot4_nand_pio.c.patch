@@ -1,0 +1,1225 @@
+--- linux-5.4.99/drivers/mtd/nand/pilot4_nand_pio.c	2021-03-23 14:38:25.570197618 +0800
++++ linux/drivers/mtd/nand/pilot4_nand_pio.c	2021-03-19 17:18:45.087956900 +0800
+@@ -0,0 +1,1222 @@
++/*
++ * Copyright (C) 2003-2015 Emulex. All rights reserved.
++ * EMULEX is a trademark of Emulex.
++ * www.emulex.com
++ * This program is free software; you can redistribute it and/or modify it under the terms of version 2
++ * of the GNU General Public License as published by the Free Software Foundation.
++ * This program is distributed in the hope that it will be useful. ALL EXPRESS OR IMPLIED CONDITIONS,
++ * REPRESENTATIONS AND WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY, FITNESS FOR A
++ * PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS
++ * ARE HELD TO BE LEGALLY INVALID. See the GNU General Public License for more details, a copy of which
++ * can be found in the file COPYING included with this package.
++ */
++
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/version.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <asm/io.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/nand.h>
++#include <asm/sizes.h>
++
++#include "pilot4_nand.h"
++
++
++#define LEVEL_ERR     2
++#define LEVEL_WARN    1
++#define LEVEL_INFO    0
++
++#define DBG_LEVEL         2 //current debug level
++
++#define PILOT4_ONFI_DBG(LEVEL, x...)       if(1 &&  LEVEL > LEVEL_INFO)\
++                                                printk(x)
++void switch_to_pio(void);
++tU32 nand_find_lmem_address (void);
++void nand_inc_freeptr (void);
++
++static unsigned char * virtual_lmem;
++extern void pilot_nand_dump_regs(void);
++
++void pilot4_onfi_setNandBLKCTL (tU16 blkcnt, tU16 blksize)
++{
++	tU32 tempData;
++	tempData = *(tPVU32)(NAND_BASE + NCBLKCTRL);
++	//clear all the required fields
++	tempData &= (~(NCBLKCTRL_IOPBLKSZ));
++	tempData &= (~(NCBLKCTRL_IOPBLKCNT));
++
++	//store all the required values
++	tempData |= ((blksize & NCBLKCTRL_IOPBLKSZ_BITS) << NCBLKCTRL_IOPBLKSZ_POS);
++	tempData |= ((blkcnt & NCBLKCTRL_IOPBLKCNT_BITS) << NCBLKCTRL_IOPBLKCNT_POS);
++
++	*(tPVU32)(NAND_BASE + NCBLKCTRL) = tempData;
++}
++
++tU8 pilot4_onfi_genCLECycle (tU8 cmd)
++{
++
++	tU32 data32;
++
++	tU32 sub_temp_data;
++	tU32 temp = 0x0;
++
++#ifdef NAND_DEBUG_MSG2
++	printk("in GenCLECycle for CMD %x \n", cmd);
++#endif
++
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0x00ffffff;
++	temp =  cmd << 24;
++	*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++
++	//Asssert cle
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 | 0x100000;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++	//Poll
++	data32 = 0x100000;
++	sub_temp_data = 0x00;
++	// Does the driver need poll here - SN
++	while(((data32 & 0x100000) == 0x100000) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		printk ("FAIL ... TIMED OUT Point 9.. \n");
++		return (0x1);
++	}
++
++	return (0x0);
++}
++
++
++tU8 pilot4_onfi_gen_cmdALECycle (tU8 addr)
++{
++	tU32 data32;
++
++	tU32 sub_temp_data;
++	tU32 temp = 0x0;
++
++
++#ifdef NAND_DEBUG_MSG
++	printk ("Task: gencmdALECycle  for Addr %x  .. \n", addr);
++#endif
++
++	//    // Program the address
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0x00ffffff;
++	temp = 0x0;
++	temp = (addr & 0xff) << 24;
++#ifdef NAND_DEBUG_MSG
++	printk ("Task: ALECycle  for AddrC0 %lx  .. \n", temp);
++	printk ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++	*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++
++	//Asssert ale
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 | 0x200000;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++	//Poll
++	data32 = 0x200000;
++	sub_temp_data = 0x00;
++	while(((data32 & 0x200000) == 0x200000) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		printk ("FAIL ... TIMED OUT Point 10.. \n");
++		return (0x1);
++	}
++	return 0x0;
++}
++
++
++tU8 pilot4_onfi_genDataOECycle (tU8 count, tU8 wr_rd_n)
++{
++
++	tU32 data32;
++	tU32 sub_temp_data;
++	tU32 temp = 0x0;
++	tU32 poll_on = 0;
++#ifdef NAND_DEBUG_MSG2
++	printk("in DataOECycle for count of %x \n", count);
++#endif
++
++	//Data OE Count
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0x00ffffff;
++	temp = count << 24;
++	*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++	//Asssert write
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	if (wr_rd_n) {
++		poll_on = 0x800000;
++		data32 = data32 | poll_on;
++	} else {
++		poll_on = 0x400000;
++		data32 = data32 | poll_on;
++	}
++
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++	//Poll
++	data32 = poll_on;
++	sub_temp_data = 0x00;
++	// Does the driver need to pol here ?
++	while(((data32 & poll_on) == poll_on) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		printk ("FAIL ... TIMED OUT Polling for DATA OE for count of %x .. \n", count);
++		return (0x1);
++	}
++
++	return (0x0);
++}
++
++/*
++	Returns weather data has been read from the device and is available in the LMEM
++ */
++int nand_poll_lrx_pio_rxdt_rdy(void)
++{
++	tU32 sub_data32;
++	tU32 sub_temp_data;
++	sub_data32 = 0x00;
++	sub_temp_data = 0x00;
++	while(((sub_data32 & 0x01) == 0x00) && (sub_temp_data <= 0x00ffffff)) {
++		sub_data32 = *(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL);
++		sub_temp_data = sub_temp_data + 1;
++	}
++
++	if (sub_temp_data > 0x00ffffff)  {
++		printk ("FAIL ... TIMED OUT of Polling for lrx_pio_rxdt_rdy.. \n");
++		pilot_nand_dump_regs();
++		sub_data32 = 0x01;
++		return -1;
++	} else {
++		sub_data32 = 0x00;
++	}
++	return 0;
++}
++
++tU32 nand_find_lmem_rdaddress(void)
++{
++	tU32 sub_data32;
++	tU32 sub_temp_data;
++	tU32 lmem_addr_location;
++
++	sub_data32 = 0x100000;
++	sub_temp_data = 0x00;
++	while(((sub_data32 & 0x100000) == 0x100000) && (sub_temp_data <= 0x000fffff)) {
++		sub_data32 = *(tPVU32) (NAND_BASE + NCLMEMSTS);
++		sub_temp_data = sub_temp_data + 1;
++#ifdef NAND_DEBUG_MSG
++		if(once)
++			printk ("No LMEM Pages have Valid Data .. Waiting to Clear\n");
++		once = 1;
++#endif
++	}
++
++	//Checking CPQ Pointer in lmem ptr
++	sub_data32 = *(tPVU32) (NAND_BASE + NCLMEMSTS);
++	sub_data32 = (sub_data32 & 0x0000ffff);
++#ifdef NAND_DEBUG_MSG3
++	printk ("CPQ Pointer in LMEM %lx\n", sub_data32);
++#endif
++	sub_data32 = sub_data32 << 2;
++#ifdef NAND_DEBUG_MSG3
++	printk ("CPQ Pointer in LMEM SHIFTED %lx\n", sub_data32);
++#endif
++	lmem_addr_location = (tU32)(virtual_lmem + sub_data32);
++#ifdef NAND_DEBUG_MSG3
++	printk ("FINAL LMEM READ Address %lx\n", lmem_addr_location);
++#endif
++
++	return (lmem_addr_location);
++}
++
++
++
++void nand_inc_lmemcpq_ptr(void)
++{
++	tU32 sub_data32;
++	//iop_lmem_inc_cpq_ptr
++	sub_data32 = *(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL);
++	sub_data32 = sub_data32 & 0xfffffffb;
++	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = (sub_data32 | 0x00000004);
++	//CPQ_PTR & FRE_PTR
++	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = (sub_data32 & 0xfffffff3); 
++	return;
++}
++
++void pilot4_onfi_SetKeepCEasserted(void)
++{
++	tU32 sub_data32;
++	sub_data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	sub_data32 = sub_data32 | 0x4000;
++	*(tPVU32) (NAND_BASE + DMACTRL) = sub_data32;
++}
++
++void pilot4_onfi_setupNandLMEMPageCFG (tU8 high_wm, tU8 low_wm, tU8 max_num_pages, tU16 page_size_dw)
++{
++	tU32 tempData;
++
++#ifdef NAND_DEBUG_MSG
++	printk("setupLMEMPageCFG\n");
++#endif
++	tempData = *(tPVU32)(NAND_BASE + NCCFG0);
++	//clear all the required fields
++	tempData &= (~(NAND_LMEM_PAGE_SIZE_DWORDS));
++	tempData &= (~(NAND_LMEM_MAX_NUM_PAGES));
++	tempData &= (~(NAND_LMEM_FREE_PAGE_LOW_WM));
++	tempData &= (~(NAND_LMEM_FREE_PAGE_HIGH_WM));
++
++	//store all the required values
++	tempData |= ((max_num_pages & NAND_LMEM_MAX_NUM_PAGES_BITS) << NAND_LMEM_MAX_NUM_PAGES_POS);
++	tempData |= ((page_size_dw & NAND_LMEM_PAGE_SIZE_DWORDS_BITS) << NAND_LMEM_PAGE_SIZE_DWORDS_POS);
++	tempData |= ((high_wm & NAND_LMEM_FREE_PAGE_HIGH_WM_BITS) << NAND_LMEM_FREE_PAGE_HIGH_WM_POS);
++	tempData |= ((low_wm & NAND_LMEM_FREE_PAGE_LOW_WM_BITS) << NAND_LMEM_FREE_PAGE_LOW_WM_POS);
++	*(tPVU32)(NAND_BASE + NCCFG0) = tempData;
++}
++
++void read_data(void)
++{
++	tU32 data32;
++	int i;
++
++	data32 = nand_find_lmem_rdaddress();
++		//printk("Special READ ID is %s\n", ((volatile unsigned char *)data32));
++	printk("Read data:");
++	for(i=0; i< 40; i++) {
++		PILOT4_ONFI_DBG(LEVEL_INFO,"%x ", *(((volatile unsigned char *)data32)+i));
++//			*(id_data+i) = *(((volatile unsigned char *)data32)+0x20+i);
++	}
++	nand_inc_lmemcpq_ptr();
++	printk("\n");
++}
++
++//READ ID with address 0x00
++//READ ID with address 0x20
++int pilot4_onfi_read_id(tU32 addr)
++{
++	tU32 data32;
++	int i;
++	extern u8 *scratch_dma_v_addr;
++
++	pilot4_onfi_setNandBLKCTL (0x1, 0x4);
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 | (1<<14);
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++	pilot4_onfi_genCLECycle(0x90);
++	pilot4_onfi_gen_cmdALECycle(addr);
++
++	pilot4_onfi_genDataOECycle(0x3, 0);
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++	nand_poll_lrx_pio_rxdt_rdy();
++	//Clearing lrx_pio_rxdt_rdy Latched
++	data32 = *((tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL));
++  	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = data32 | 0x01;
++	data32 = nand_find_lmem_rdaddress();
++	for(i=0; i< 4; i++) {
++		PILOT4_ONFI_DBG(LEVEL_INFO,"Byte %d is %x\n", i, *(((volatile unsigned char *)data32)+i));
++	}
++	nand_inc_lmemcpq_ptr();
++	memcpy(scratch_dma_v_addr, (void*)data32, 4);
++	return 0;
++}
++
++tU8 pilot4_genALECycle (tU16 ColAddr, tU8 PageAddr, tU16 BlockAddr, tU8 LunAddr)
++{
++
++	tU32 data32;
++
++	tU32 sub_temp_data;
++	tU32 temp = 0x0;
++	tU32 loop_cnt;
++	int blk_addr_mask = 0;
++	int blk_bits = total_block_bits;
++
++
++#ifdef NAND_DEBUG_MSG2
++	nc_printf ("Task: genALECycle  for Addr %x  .. \n", ColAddr);
++#endif
++
++	loop_cnt = 0x00;
++	while (loop_cnt < 5) {
++		// Program the address
++		data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++		data32 = data32 & 0x00ffffff;
++		temp = 0x0;
++		switch (loop_cnt) {
++			case 0:
++				temp = (ColAddr & 0x00ff) << 24;
++#ifdef NAND_DEBUG_MSG2
++				nc_printf ("Task: ALECycle  for AddrC0 %lx  .. \n", temp);
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++			break;
++			case 1:
++				ColAddr = ColAddr >> 8;
++				temp =  (ColAddr & 0x001f) << 24;
++#ifdef NAND_DEBUG_MSG2
++				nc_printf ("Task: ALECycle  for AddrC1 %x  .. \n", (ColAddr & 0x001f));
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++			break;
++			case 2:
++				PageAddr = PageAddr & (NR_PAGES_PER_BLOCK - 1);
++				if((8 - (page_shift_addr - col_addr_shift)) < 0)
++					printk("(8 - (page_shift_addr - col_addr_shift)) is < 0?\n");
++				blk_addr_mask = (1 << (8 - (page_shift_addr - col_addr_shift))) - 1;
++				PageAddr |= ((BlockAddr & blk_addr_mask) << (page_shift_addr - col_addr_shift));
++				BlockAddr = BlockAddr >> (8 - (page_shift_addr - col_addr_shift));
++				blk_bits = blk_bits - (8 - (page_shift_addr - col_addr_shift));
++				temp = (PageAddr) << 24;
++#ifdef NAND_DEBUG_MSG2
++				nc_printf ("Task: ALECycle  for AddrR1 %lx  .. \n", temp);
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++			break;
++			case 3:
++				temp = (BlockAddr & 0xff) << 24; // select bits (8:1)
++#ifdef NAND_DEBUG_MSG2
++				nc_printf ("Task: ALECycle  for AddrR2 %lx  .. \n", temp);
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++			break;
++			case 4:
++				BlockAddr = BlockAddr >> 8;  // discard bit2 [8:1]
++				blk_bits = blk_bits - 8;
++				blk_addr_mask = (1 << (blk_bits)) - 1;
++				BlockAddr = BlockAddr & blk_addr_mask; // select bits [10:9]
++				LunAddr   = (LunAddr  & 0x1) << blk_bits;  // LunAddr[0]
++				temp  = ((LunAddr | BlockAddr) & 0x0f) << 24;
++#ifdef NAND_DEBUG_MSG2
++				nc_printf ("Task: ALECycle  for AddrR3 %lx  .. \n", temp);
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + DMACTRL) = (data32 | temp);
++			break;
++		}
++
++		//Asssert ale
++		data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++		data32 = data32 | 0x200000;
++		*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++		//Poll
++		data32 = 0x200000;
++		sub_temp_data = 0x00;
++		while(((data32 & 0x200000) == 0x200000) && (sub_temp_data <= 0x000fffff)) {
++			data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++			sub_temp_data = sub_temp_data + 1;
++		}
++		if (sub_temp_data > 0x000fffff) {
++			nc_printf ("FAILALE ... TIMED OUT Point 10.. \n");
++			return (0x1);
++		}
++		loop_cnt = loop_cnt + 1;
++	}
++
++  #ifdef NAND_DEBUG_MSG2
++  	nc_printf ("Done Cycles of ALE  -- %lu \n", loop_cnt+1);
++  #endif
++
++  return (0x0);
++}
++
++extern unsigned long current_page, current_column;
++void pilot4_write_page(struct mtd_info *mtd, const u_char *buf, int len)
++{
++	struct nand_chip *this = mtd->priv;
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++	u16 col_addr = 0, blk_addr = 0;
++	u8 pageaddr;
++	int res = 0, i = 0 , count = 0, j = 0;
++	tU32 data32;
++	tU32 sub_temp_data;
++	int timeout = 1000000;
++
++	switch_to_pio();
++	if(current_column > 0) {
++		col_addr = (current_column) & COL_MASK;
++		panic("\nwritepage:!!current_page %lx current_column %lx len %d\n", current_page, current_column, len);
++	}
++	pageaddr = (start_addr >> COL_ADDR_SHIFT) & (NR_PAGES_PER_BLOCK - 1);
++	blk_addr = (start_addr >> PAGE_ADDR_SHIFT) & (TOTAL_BLOCKS - 1);
++	//printk("pilot4_write_page:col_addr %d pageaddr %d blk_addr %d page %x\n", col_addr, pageaddr, blk_addr, current_page);
++	if((len % 256))
++		panic("Not multiple of 256!%d\n", len);
++	count = len/256;
++	if((len %256))
++		count++;
++	pilot4_onfi_setNandBLKCTL(0x1, 0x100);
++	res = pilot4_onfi_genCLECycle(0x80);
++	if(res != 0) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "Gen CLE cycle CMD 0x00 failed in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++
++	//tU8 pilot4_onfi_genALECycle ColAddr[12:0], PageAddr[6:0], BlockAddr[17:7], LunAddr[7:0]
++	if (pilot4_genALECycle(col_addr, pageaddr, blk_addr, 0x0)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "23FAIL ... pilot4_onfi_genALECycle Addr  .. in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++#ifdef KEEP_OE
++	//Set keep_we and keep_dqs for Writes:
++	data32 = *(tPVU32) (NAND_BASE + 0x58);
++	*(tPVU32) (NAND_BASE + 0x58) = (data32 | 0x60000);
++#endif
++	PILOT4_ONFI_DBG(LEVEL_INFO,"WrITEPAGE:");
++	for(i = 0;i < count;i++) {
++		pilot4_onfi_setNandBLKCTL(0x1, 0x100);
++		data32 = nand_find_lmem_address();
++            	memcpy((void*)data32, (buf + col_addr), 0x100);
++		nand_inc_freeptr();
++
++		//Data OE Count, wr_rd_n
++		if (pilot4_onfi_genDataOECycle(0xFF, 0x1)) {
++			PILOT4_ONFI_DBG(LEVEL_ERR, "FAIL ... pilot4_onfi_genDataOECycle for count %x.. \n", 0xFF);
++			return;
++		}
++
++		for(j=0; j< 256; j++) {
++			if((j%16) ==0)
++				PILOT4_ONFI_DBG(LEVEL_INFO,"\n%4d:",(i*256) + j);
++			PILOT4_ONFI_DBG(LEVEL_INFO,"%2x ", *(((volatile unsigned char *)data32)+j));
++		}
++		col_addr += 256;
++	}
++	PILOT4_ONFI_DBG(LEVEL_INFO,"\n");
++
++	current_column += len;
++	res = pilot4_onfi_genCLECycle(0x10);
++	if(res != 0) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "Gen CLE cycle CMD 0x10 failed in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++#ifdef KEEP_OE
++	//Clear keep_we and keep_dqs for Writes:
++	data32 = *(tPVU32) (NAND_BASE + 0x58);
++	*(tPVU32) (NAND_BASE + 0x58) = (data32 & 0xfff9ffff);
++#endif
++	//After Page Program Polling for Busy to be reset (active high)
++	data32 = 0x00;
++	while((data32 & 0x8000) != 0x8000) {
++		data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++		timeout--;
++		if(timeout <= 0) {
++			printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++			panic("");
++#endif
++			break;
++		}
++		udelay(1);
++	}
++
++#if 1
++	pilot4_onfi_setNandBLKCTL(0x1, 0x4);
++
++	if (pilot4_onfi_genCLECycle (0x70)) {
++		nc_printf ("FAIL ... genCLECycle for CMD %x.. \n", 0x70);
++		return;
++	}
++
++	if (pilot4_onfi_genDataOECycle (0x3, 0x0)) {
++		nc_printf ("FAIL ... genDataOECycle for CMD %x.. \n", 0x70);
++		return;
++	}
++	//Poll
++	data32 = 0x000000;
++	sub_temp_data = 0x00;
++	while(((data32 & 0x8000) == 0x0000) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + 0x30);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		nc_printf ("FAIL ... TIMED OUT Waiting for BSY to be set in write oob Status \n");
++		return;
++	}
++
++	nand_poll_lrx_pio_rxdt_rdy();
++
++	//Clearing lrx_pio_rxdt_rdy Latched
++	data32 = *(tPVU32) (NAND_BASE + 0x64);
++	*(tPVU32) (NAND_BASE + 0x64) = data32 | 0x01;
++
++	data32 = nand_find_lmem_rdaddress ();
++	if(*((volatile unsigned char *) data32) != 0xe0)
++		nc_printf("wrpage Command 70 returned %x\n", *((volatile unsigned char *) data32));
++	nand_inc_lmemcpq_ptr ();
++#endif
++
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++	return;
++}
++#ifdef PILOT_NAND_DBG_FLG
++extern int start_print;
++#endif
++void pilot4_read_page(struct mtd_info *mtd, const u_char *buf, int len)
++{
++	struct nand_chip *this = mtd->priv;
++//	struct pilot_nand_priv * priv = (struct pilot_nand_priv *)(((unsigned long) this) + sizeof(struct nand_chip));
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++	u16 col_addr = 0, blk_addr = 0;
++	u8 pageaddr;
++	int res = 0, count = 0;
++#ifdef PILOT_NAND_DBG_FLG
++	int j=0;
++#endif
++	tU32 data32;
++	tU32 sub_temp_data;
++	int i = 0;
++
++	switch_to_pio();
++	if(current_column > 0) {
++		col_addr = (current_column) & COL_MASK;
++		//This also will be used for now i assume this is mutliple of 256 and len is also multiple of 256 bytes
++		//printk("\nreadpage:!!current_page %lx current_column %lx len %d\n", current_page, current_column, len);
++	}
++	pageaddr = (start_addr >> COL_ADDR_SHIFT) & (NR_PAGES_PER_BLOCK - 1);
++	blk_addr = (start_addr >> PAGE_ADDR_SHIFT) & (TOTAL_BLOCKS - 1);
++#ifdef NAND_DEBUG_MSG
++	printk("pilot4_read_page:col_addr %d pageaddr %d blk_addr %d\n", col_addr, pageaddr, blk_addr);
++#endif
++	if((len %256) || (current_column % 256))
++		panic("Not multiple of 256!%d current_column %lu\n", len, current_column);
++	if((col_addr + len) > mtd->writesize) {
++		panic("\n\ncol_addr %d + len %d > 4096!!\n\n", col_addr, len);
++	}
++	count = len/256;
++	if((len %256))
++		count++;
++	pilot4_onfi_setNandBLKCTL(0x1, 0x100);
++	res = pilot4_onfi_genCLECycle(0x00);
++	if(res != 0) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "Gen CLE cycle CMD 0x00 failed in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++
++	//tU8 pilot4_onfi_genALECycle ColAddr[12:0], PageAddr[6:0], BlockAddr[17:7], LunAddr[7:0]
++	if (pilot4_genALECycle(col_addr, pageaddr, blk_addr, 0x0)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "FAIL ... pilot4_onfi_genALECycle Addr  .. in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++	//Asssert cle
++
++	// cmd[7:0]
++	if (pilot4_onfi_genCLECycle (0x30)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "Gen CLE cycle CMD 0x30 failed in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++#ifdef PILOT_NAND_DBG_FLG
++	if(start_print) {
++		PILOT4_ONFI_DBG(LEVEL_INFO,"READPAGE:");
++	}
++#endif
++	col_addr = 0;
++	for(i = 0;i < count;i++) {
++#ifdef KEEP_OE
++		//Set keep_oe for Read:
++		data32 = *(tPVU32) (NAND_BASE + 0x58);
++		*(tPVU32) (NAND_BASE + 0x58) = (data32 | 0x10000);
++#endif
++		//Data OE Count, wr_rd_n
++		if (pilot4_onfi_genDataOECycle(0xFF, 0x0)) {
++			PILOT4_ONFI_DBG(LEVEL_ERR, "FAIL ... pilot4_onfi_genDataOECycle for count %x.. \n", 0xFF);
++			return;
++		}
++		res = nand_poll_lrx_pio_rxdt_rdy();
++		if(res == -1)
++			return;
++
++		//Clearing lrx_pio_rxdt_rdy Latched
++		data32 = *((tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL));
++		*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = data32 | 0x01;
++	
++		data32 = nand_find_lmem_rdaddress();
++		memcpy((u8*)(buf + col_addr), (void*)data32, 256);
++#ifdef PILOT_NAND_DBG_FLG
++		if(start_print) {
++			for(j=0; j< 256; j++) {
++				if((j%16) ==0)
++					PILOT4_ONFI_DBG(LEVEL_INFO,"\n%4d:",(i*256) + j);
++				PILOT4_ONFI_DBG(LEVEL_INFO,"%2x ", *(volatile unsigned char*)(data32 + j));
++			}
++		}
++#endif
++		nand_inc_lmemcpq_ptr();
++#ifdef KEEP_OE
++		//Clear keep_oe for Reads:
++		data32 = *(tPVU32) (NAND_BASE + 0x58);
++		*(tPVU32) (NAND_BASE + 0x58) = (data32 & 0xfffeffff);
++#endif
++		col_addr += 256;
++	}
++	current_column += len;
++#ifdef PILOT_NAND_DBG_FLG
++	if(start_print)
++		PILOT4_ONFI_DBG(LEVEL_INFO,"\n");
++#endif
++#if 1
++	pilot4_onfi_setNandBLKCTL(0x1, 0x4);
++
++	if (pilot4_onfi_genCLECycle (0x70)) {
++		nc_printf ("FAIL ... genCLECycle for CMD %x.. \n", 0x70);
++		return;
++	}
++
++	if (pilot4_onfi_genDataOECycle (0x3, 0x0)) {
++		nc_printf ("FAIL ... genDataOECycle for CMD %x.. \n", 0x70);
++		return;
++	}
++	//Poll
++	data32 = 0x000000;
++	sub_temp_data = 0x00;
++	while(((data32 & 0x8000) == 0x0000) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + 0x30);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		nc_printf ("FAIL ... TIMED OUT Waiting for BSY to be set in write oob Status \n");
++		return;
++	}
++
++	nand_poll_lrx_pio_rxdt_rdy();
++
++	//Clearing lrx_pio_rxdt_rdy Latched
++	data32 = *(tPVU32) (NAND_BASE + 0x64);
++	*(tPVU32) (NAND_BASE + 0x64) = data32 | 0x01;
++
++	data32 = nand_find_lmem_rdaddress ();
++	if(*((volatile unsigned char *) data32) != 0xe0)
++		nc_printf("rdpage Command 70 returned %x\n", *((volatile unsigned char *) data32));
++	nand_inc_lmemcpq_ptr ();
++#endif
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++}
++
++tU32 nand_find_lmem_address (void)
++{
++	tU32 sub_data32;
++	tU32 sub_temp_data;
++	tU32 lmem_addr_location;
++
++	sub_data32 = 0x200000;
++	sub_temp_data = 0x00;
++	while(((sub_data32 & 0x200000) == 0x200000) && (sub_temp_data <= 0x000fffff)) {
++		sub_data32 = *(tPVU32) (NAND_BASE + NCLMEMSTS);
++		sub_temp_data = sub_temp_data + 1;
++#ifdef NAND_DEBUG_MSG
++		if(once)
++			nc_printf ("All LMEM Pages have Valid Entries .. Waiting to Clear\n");
++		once = 1;
++#endif
++	}
++
++	//Checking available lmem ptr
++	sub_data32 = *(tPVU32) (NAND_BASE + NCLMEMADDR);
++	sub_data32 = (sub_data32 & 0x0000ffff);
++#ifdef NAND_DEBUG_MSG2
++	nc_printf ("Free Pointer in LMEM %lx\n", sub_data32);
++#endif
++	sub_data32 = sub_data32 << 2;
++#ifdef NAND_DEBUG_MSG2
++	nc_printf ("Free Pointer in LMEM SHIFTED %lx\n", sub_data32);
++#endif
++	lmem_addr_location = (tU32) (virtual_lmem + sub_data32);
++#ifdef NAND_DEBUG_MSG2
++	nc_printf ("FINAL LMEM Address %lx\n", lmem_addr_location);
++#endif
++
++	return (lmem_addr_location);
++}
++
++void nand_inc_freeptr (void)
++{
++	tU32 sub_data32;
++	//inc_freeptr
++	sub_data32 = *(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL);
++	sub_data32 = sub_data32 & 0xfffffff7;
++	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = (sub_data32 | 0x00000008);
++	//CPQ_PTR & FRE_PTR
++	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = (sub_data32 & 0xfffffff3); 
++	//*(tPVU32) (NAND_BASE + 0x64) = (sub_data32);
++	return;
++}
++
++void test_write_ptr(int count)
++{
++	int i = 0;
++	for(i = 0;i < count;i++) {
++		nand_find_lmem_address();
++		nand_inc_freeptr();
++	}
++	return;
++}
++void pilot4_write_oob(struct mtd_info *mtd, const u_char *buf, int len)
++{
++	struct nand_chip *this = mtd->priv;
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++	u16 col_addr = 0, blk_addr = 0;
++	u8 pageaddr;
++	int res = 0, i = 0;
++	tU32 data32;
++	tU32 sub_temp_data;
++	int timeout = 1000000;
++	
++	switch_to_pio();
++	PILOT4_ONFI_DBG(LEVEL_INFO,"pilot4_write_oob start addr is %lx current_page %lx %lx\n", start_addr, current_page ,current_column);
++	pilot4_onfi_setNandBLKCTL(0x1, mtd->oobsize);
++	start_addr = start_addr + mtd->writesize; //because every count is 256 blocks
++	res = pilot4_onfi_genCLECycle(0x80);
++	if(res != 0) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "Gen CLE cycle CMD 0x00 failed in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++	col_addr = mtd->writesize;
++	pageaddr = (start_addr >> COL_ADDR_SHIFT) & (NR_PAGES_PER_BLOCK - 1);
++	blk_addr = (start_addr >> PAGE_ADDR_SHIFT) & (TOTAL_BLOCKS - 1);
++#ifdef NAND_DEBUG_MSG
++	printk("Writeoob:col_addr %d pageaddr %d blk_addr %d\n", col_addr, pageaddr, blk_addr);
++#endif
++	//tU8 pilot4_onfi_genALECycle ColAddr[12:0], PageAddr[6:0], BlockAddr[17:7], LunAddr[7:0]
++	if (pilot4_genALECycle(col_addr, pageaddr, blk_addr, 0x0)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "FAIL ... pilot4_onfi_genALECycle Addr  .. in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++	data32 = nand_find_lmem_address ();	
++	//Asssert cle
++
++	memcpy((void*)(data32),buf, len);
++	nand_inc_freeptr();
++#ifdef KEEP_OE
++        //Set keep_we and keep_dqs for Writes:
++        data32 = *(tPVU32) (NAND_BASE + 0x58);
++        *(tPVU32) (NAND_BASE + 0x58) = (data32 | 0x60000);
++#endif
++	//Data OE Count, wr_rd_n
++	if (pilot4_onfi_genDataOECycle ((mtd->oobsize-1), 0x1)) 	{
++		PILOT4_ONFI_DBG(LEVEL_ERR, "FAIL ... pilot4_onfi_genDataOECycle for count %x.. \n", 0xFF);
++		return;
++	}
++	//CLE Data for Page Program:(0x10)
++	// cmd[7:0]
++	if (pilot4_onfi_genCLECycle (0x10)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR,"FAIL ... genCLECycle for CMD %x.. \n", 0x10);
++		return;
++	}
++#ifdef KEEP_OE
++	//Clear keep_we and keep_dqs for Writes:
++	data32 = *(tPVU32) (NAND_BASE + 0x58);
++	*(tPVU32) (NAND_BASE + 0x58) = (data32 & 0xfff9ffff);
++#endif
++	//After Page Program Polling for Busy to be reset (active high)
++	data32 = 0x00;
++	while((data32 & 0x8000) != 0x8000) {
++		data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++                timeout--;
++                if(timeout <= 0) {
++                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                        panic("");
++#endif
++                        break;
++                }
++                udelay(1);
++	}
++
++#if 1
++	pilot4_onfi_setNandBLKCTL(0x1, 0x4);
++
++	if (pilot4_onfi_genCLECycle (0x70)) {
++		nc_printf ("FAIL ... genCLECycle for CMD %x.. \n", 0x70);
++		return;
++	}
++
++	if (pilot4_onfi_genDataOECycle (0x3, 0x0)) {
++		nc_printf ("FAIL ... genDataOECycle for CMD %x.. \n", 0x70);
++		return;
++	}
++	//Poll
++	data32 = 0x000000;
++	sub_temp_data = 0x00;
++	while(((data32 & 0x8000) == 0x0000) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + 0x30);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		nc_printf ("FAIL ... TIMED OUT Waiting for BSY to be set in write oob Status \n");
++		return;
++	}
++
++	nand_poll_lrx_pio_rxdt_rdy();
++
++	//Clearing lrx_pio_rxdt_rdy Latched
++	data32 = *(tPVU32) (NAND_BASE + 0x64);
++	*(tPVU32) (NAND_BASE + 0x64) = data32 | 0x01;
++
++	data32 = nand_find_lmem_rdaddress ();
++	if(*((volatile unsigned char *) data32) != 0xe0)
++		nc_printf("The Command 70 returned %x\n", *((volatile unsigned char *) data32));
++	nand_inc_lmemcpq_ptr ();
++#endif
++
++	
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++	return;
++}
++void pilot4_read_oob(struct mtd_info *mtd, u_char *buf, int len)
++{
++	struct nand_chip *this = mtd->priv;
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++	u16 col_addr = 0, blk_addr = 0;
++	u8 pageaddr;
++	int res = 0, i = 0;
++	tU32 data32;
++	switch_to_pio();
++//	PILOT4_ONFI_DBG(LEVEL_INFO,"pilot4_read_oob start addr is %lx current_page %lx %lx\n", start_addr, current_page ,current_column);
++	pilot4_onfi_setNandBLKCTL(0x1, mtd->oobsize);
++	start_addr = start_addr + mtd->writesize; //because every count is 256 blocks
++	res = pilot4_onfi_genCLECycle(0x00);
++	if(res != 0) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "Gen CLE cycle CMD 0x00 failed in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++	col_addr = mtd->writesize;
++	pageaddr = (start_addr >> COL_ADDR_SHIFT) & (NR_PAGES_PER_BLOCK - 1);
++	blk_addr = (start_addr >> PAGE_ADDR_SHIFT) & (TOTAL_BLOCKS - 1);
++	//tU8 pilot4_onfi_genALECycle ColAddr[12:0], PageAddr[6:0], BlockAddr[17:7], LunAddr[7:0]
++	if (pilot4_genALECycle(col_addr, pageaddr, blk_addr, 0x0)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "FAIL ... pilot4_onfi_genALECycle Addr  .. in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++	//Asssert cle
++
++	// cmd[7:0]
++	if (pilot4_onfi_genCLECycle (0x30)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "Gen CLE cycle CMD 0x30 failed in %s for count %d\n", __FUNCTION__, i);
++		return;
++	}
++#ifdef KEEP_OE
++        //Set keep_oe for Read:
++        data32 = *(tPVU32) (NAND_BASE + 0x58);
++        *(tPVU32) (NAND_BASE + 0x58) = (data32 | 0x10000);
++#endif
++	//Data OE Count, wr_rd_n
++	if (pilot4_onfi_genDataOECycle((mtd->oobsize - 1), 0x0)) {
++		PILOT4_ONFI_DBG(LEVEL_ERR, "FAIL ... pilot4_onfi_genDataOECycle for count %x.. \n", 0xFF);
++		return;
++	}
++	res = nand_poll_lrx_pio_rxdt_rdy();
++	if(res == -1)
++		return;
++
++	//Clearing lrx_pio_rxdt_rdy Latched
++	data32 = *((tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL));
++	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = data32 | 0x01;
++	data32 = nand_find_lmem_rdaddress();
++#ifdef PILOT_NAND_DBG_FLG
++	if(start_print) {
++		PILOT4_ONFI_DBG(LEVEL_INFO,"READOOB:");
++		for(i=0; i< mtd->oobsize; i++) {
++			if((i%16) == 0)
++				PILOT4_ONFI_DBG(LEVEL_INFO,"\n%4d:",i);
++			//if(*(((volatile unsigned char *)data32)+i) != 0xff)
++				PILOT4_ONFI_DBG(LEVEL_INFO,"%x ", *(((volatile unsigned char *)data32)+i));
++		}
++		PILOT4_ONFI_DBG(LEVEL_INFO,"\n");
++	}
++#endif
++	nand_inc_lmemcpq_ptr();
++	memcpy(buf, (void*)data32, len);
++#ifdef KEEP_OE
++        //Clear keep_oe for Reads:
++        data32 = *(tPVU32) (NAND_BASE + 0x58);
++        *(tPVU32) (NAND_BASE + 0x58) = (data32 & 0xfffeffff);
++#endif
++	//printk("memcpy done\n");
++	current_column = 0;
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++}
++
++void switch_to_dma(void)
++{
++	unsigned int data32 = 0;
++	int timeout = 1000000;
++#if 1
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++	*((volatile unsigned int *)IO_ADDRESS(LDMA_BASE)) |= 1;
++
++	*((volatile unsigned long *)(pilot4_nand_base + NACCTL0))  |= (1 << 31);
++	*((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) |= STRTCMD_STARTCMD;
++	while(((*(volatile unsigned long *)(pilot4_nand_base + NACCTL0)) & (1 << 31)) == (1 << 31)){
++                timeout--;
++                if(timeout <= 0) {
++                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                        panic("");
++#endif
++                        break;
++                }
++                udelay(1);
++	}
++	timeout = 1000000;
++	while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY)){
++                timeout--;
++                if(timeout <= 0) {
++                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                        panic("");
++#endif
++                        break;
++                }
++                udelay(1);
++	}
++#endif
++	data32 = *((volatile unsigned long *)(pilot4_nand_base + NCCFG1));
++	data32 = data32 | (0x3 << 30);
++	*((volatile unsigned long *)(pilot4_nand_base + NCCFG1)) = data32;
++	(*(volatile unsigned long *)(pilot4_nand_base + NCLMEMPGMGRSOFTRST)) |= 0x00000007;
++}
++void switch_to_pio(void)
++{
++	unsigned int data32 = 0;
++	static int once = 1;
++	/* Switch to PIO */
++	data32 = *((volatile unsigned long *)(pilot4_nand_base + NCCFG1));
++	data32 = data32 & 0x3fffffff;
++	*((volatile unsigned long *)(pilot4_nand_base + NCCFG1)) = data32;
++	pilot4_onfi_SetKeepCEasserted();
++	if(once) {
++		
++		pilot4_onfi_setupNandLMEMPageCFG (0x0, 0x0, 0x8, 0x80);
++	}
++	once = 0;
++}
++	
++void pilot4_pio_init(void)
++{
++	virtual_lmem = (unsigned char *) ioremap_nocache(LMEM_START_ADDRESS, LMEM_LENGTH);
++}
++tU32 pilot4_blk_erase (tU32 nandpgstaddr)
++{
++	tU32 sub_temp_data;
++	tU32 temp = 0x0;
++	tU32 loop_cnt;
++	tU32 data32;
++	switch_to_pio();
++	pilot4_onfi_SetKeepCEasserted();
++	if(pilot4_onfi_genCLECycle(0x60)) {
++		nc_printf ("FAIL ... genCLECycle for CMD %x.. \n", 0x60);
++		return (0x1);
++	}
++
++
++	loop_cnt = 0x00;
++	while (loop_cnt < 3) {
++
++		//    // Program the address
++		data32 = *(tPVU32) (NAND_BASE + 0x30);
++		data32 = data32 & 0x00ffffff;
++		temp = 0x0;
++		switch (loop_cnt) {
++			case 0:
++				temp = (nandpgstaddr >> COL_ADDR_SHIFT);
++				temp = ((temp & 0xFF) << 24);
++
++#ifdef NAND_DEBUG_MSG
++				nc_printf ("Task: ALECycle  for AddrR1 %lx  .. \n", temp);
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + 0x30) = (data32 | temp);
++			break;
++			case 1:
++				temp = nandpgstaddr >> (COL_ADDR_SHIFT + 8);
++				temp = (temp & 0xff);
++				temp =  temp << 24;
++#ifdef NAND_DEBUG_MSG
++				nc_printf ("Task: ALECycle  for AddrR2 %lx  .. \n", temp);
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + 0x30) = (data32 | temp);
++			break;
++			case 2:
++				temp = nandpgstaddr >> (COL_ADDR_SHIFT + 8 + 8);
++				temp = nandpgstaddr >> (COL_ADDR_SHIFT + 8 + 8);				
++				temp = (temp & 0xf);
++				temp =  temp << 24;
++#ifdef NAND_DEBUG_MSG
++				nc_printf ("Task: ALECycle  for AddrR3 %lx  .. \n", temp);
++				nc_printf ("Task: ALECycle  data for reg30 %lx  .. \n", (data32 | temp));
++#endif
++				*(tPVU32) (NAND_BASE + 0x30) = (data32 | temp);
++			break;
++		}
++
++		//Asssert ale
++		data32 = *(tPVU32) (NAND_BASE + 0x30);
++		data32 = data32 | 0x200000;
++		*(tPVU32) (NAND_BASE + 0x30) = data32;
++		//Poll
++		data32 = 0x200000;
++		sub_temp_data = 0x00;
++		while(((data32 & 0x200000) == 0x200000) && (sub_temp_data <= 0x000fffff)) {
++			data32 = *(tPVU32) (NAND_BASE + 0x30);
++			sub_temp_data = sub_temp_data + 1;
++		}
++		if (sub_temp_data > 0x000fffff) {
++			nc_printf ("FAIL ... TIMED OUT Erase ALE cycle.. loop_cnt %lu\n", loop_cnt);
++			return (0x1);
++		}
++
++		loop_cnt = loop_cnt+1;
++	}
++
++	if (pilot4_onfi_genCLECycle (0xD0)) {
++		nc_printf ("FAIL ... genCLECycle for CMD %x.. \n", 0x60);
++		return (0x1);
++	}
++
++	//Poll
++	data32 = 0x000000;
++	sub_temp_data = 0x00;
++	while(((data32 & 0x8000) == 0x0000) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + 0x30);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		nc_printf ("FAIL ... TIMED OUT Waiting for BSY to be set in ONFI Erase \n");
++		return (0x1);
++	}
++
++#if 1
++	pilot4_onfi_setNandBLKCTL(0x1, 0x4);
++
++	if (pilot4_onfi_genCLECycle (0x70)) {
++		nc_printf ("FAIL ... genCLECycle for CMD %x.. \n", 0x70);
++		return (0x1);
++	}
++
++	if (pilot4_onfi_genDataOECycle (0x3, 0x0)) {
++		nc_printf ("FAIL ... genDataOECycle for CMD %x.. \n", 0x70);
++		return (0x1);
++	}
++	//Poll
++	data32 = 0x000000;
++	sub_temp_data = 0x00;
++	while(((data32 & 0x8000) == 0x0000) && (sub_temp_data <= 0x000fffff)) {
++		data32 = *(tPVU32) (NAND_BASE + 0x30);
++		sub_temp_data = sub_temp_data + 1;
++	}
++	if (sub_temp_data > 0x000fffff) {
++		nc_printf ("FAIL ... TIMED OUT Waiting for BSY to be set in ONFI Erase Status \n");
++		return (0x1);
++	}
++
++	nand_poll_lrx_pio_rxdt_rdy();
++
++	//Clearing lrx_pio_rxdt_rdy Latched
++	data32 = *(tPVU32) (NAND_BASE + 0x64);
++	*(tPVU32) (NAND_BASE + 0x64) = data32 | 0x01;
++
++	data32 = nand_find_lmem_rdaddress ();
++	nand_inc_lmemcpq_ptr ();
++	if(*((volatile unsigned char *) data32) != 0xe0)
++		nc_printf("The Command 70 returned %x\n", *((volatile unsigned char *) data32));
++#endif
++	return (0x0);
++
++}
++
++void p4_get_feature(void)
++{
++	tU32 data32;
++	int i =0;
++	switch_to_pio();
++
++	pilot4_onfi_setNandBLKCTL (0x1, 0x4);
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 | (1<<14);
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++	pilot4_onfi_genCLECycle(0xEE);
++	pilot4_onfi_gen_cmdALECycle(0x1);
++	pilot4_onfi_genDataOECycle(0x3, 0);
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++	nand_poll_lrx_pio_rxdt_rdy();
++	//Clearing lrx_pio_rxdt_rdy Latched
++	data32 = *((tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL));
++  	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = data32 | 0x01;
++	data32 = nand_find_lmem_rdaddress();
++	for(i=0; i< 1; i++) {
++		printk("Get features mode %d\n", *(((volatile unsigned char *)data32)+i));
++	}
++	nand_inc_lmemcpq_ptr();
++}
++
++
++void p4_set_feature(u8 val)
++{
++	tU32 data32;
++	unsigned char*temp;
++	switch_to_pio();
++	
++	pilot4_onfi_setNandBLKCTL (0x1, 0x4);
++	/*De-assert CS here..*/
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 | (1<<14);
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++	pilot4_onfi_genCLECycle(0xEF);
++	pilot4_onfi_gen_cmdALECycle(0x1);
++	data32 = nand_find_lmem_address ();	
++	//Asssert cle
++	temp = (unsigned char*) data32;
++	temp[0] = val;
++	temp[1]  = temp[2] = temp[3] = 0;
++	nand_inc_freeptr();
++
++	pilot4_onfi_genDataOECycle(0x3, 1);
++	data32 = *(tPVU32) (NAND_BASE + DMACTRL);
++	data32 = data32 & 0xffffbfff;
++	*(tPVU32) (NAND_BASE + DMACTRL) = data32;
++
++}

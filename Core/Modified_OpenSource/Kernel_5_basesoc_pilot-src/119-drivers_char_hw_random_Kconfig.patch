@@ -1,0 +1,18 @@
+--- linux-5.4.99/drivers/char/hw_random/Kconfig	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/char/hw_random/Kconfig	2021-03-23 15:16:42.044299564 +0800
+@@ -21,6 +21,15 @@
+ 
+ if HW_RANDOM
+ 
++config HW_RANDOM_PILOT4
++    tristate "Pilot4 HW Random Number Generator support"
++    depends on HW_RANDOM && ARCH_PILOT4
++    default HW_RANDOM
++    ---help---
++      This driver provides kernel-side support for the Random Number
++      Generator hardware found on aspeed SOC.
++
++
+ config HW_RANDOM_TIMERIOMEM
+ 	tristate "Timer IOMEM HW Random Number Generator support"
+ 	depends on HAS_IOMEM

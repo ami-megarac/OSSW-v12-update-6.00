@@ -1,0 +1,17 @@
+--- linux-5.4.99/drivers/mmc/host/Kconfig	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/mmc/host/Kconfig	2021-03-23 14:29:52.673602476 +0800
+@@ -68,6 +68,14 @@
+ 
+ 	  If unsure, say N.
+ 
++config PILOT4_SDHC
++	depends on OF
++	  tristate "\"SDHC0, SDHC1 and EMMC \" support for Aspeed's Pilot"
++	  help
++	  	This selects the "SDHC0, SDHC1 and EMMC" driver support for Aspeed's Pilot.
++	  	If you enable this SDHC0, SDHC1 and EMMC modules will be active.
++
++
+ config MMC_SDHCI_IO_ACCESSORS
+ 	bool
+ 	depends on MMC_SDHCI

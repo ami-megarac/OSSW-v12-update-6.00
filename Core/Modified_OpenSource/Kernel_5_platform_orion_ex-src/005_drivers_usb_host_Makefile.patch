@@ -1,0 +1,7 @@
+--- linux/drivers/usb/host/Makefile	2021-02-17 17:35:20.000000000 +0800
++++ linux_new/drivers/usb/host/Makefile	2021-04-26 17:47:14.232937000 +0800
+@@ -88,3 +88,4 @@
+ obj-$(CONFIG_USB_HCD_SSB)	+= ssb-hcd.o
+ obj-$(CONFIG_USB_FOTG210_HCD)	+= fotg210-hcd.o
+ obj-$(CONFIG_USB_MAX3421_HCD)	+= max3421-hcd.o
++obj-$(CONFIG_USB_PILOT4_HCD)    += pilot/

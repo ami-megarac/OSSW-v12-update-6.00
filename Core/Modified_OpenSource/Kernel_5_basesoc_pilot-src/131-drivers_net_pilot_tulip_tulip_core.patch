@@ -1,0 +1,18 @@
+diff -Naur linux_org/drivers/net/ethernet/pilot_tulip/tulip_core.c linux/drivers/net/ethernet/pilot_tulip/tulip_core.c
+--- linux_org/drivers/net/ethernet/pilot_tulip/tulip_core.c	2021-07-29 15:58:02.096258949 +0800
++++ linux/drivers/net/ethernet/pilot_tulip/tulip_core.c	2021-07-29 15:57:48.236930660 +0800
+@@ -670,10 +670,10 @@
+ #ifdef PILOT_PAUSE_FR_ENABLE
+ 	 if(PHY_MICREL != tp->phy_manuf_model_num)
+ 	 {
+-		 MACL=mac_addrs[0];
+-		 MACL|=(mac_addrs[1]<<16);
+-		 MACH=mac_addrs[2];
+-
++		 MACL=cpu_to_be16(mac_addrs[2]);
++		 MACL|=cpu_to_be16(mac_addrs[1])<<16;
++		 MACH=cpu_to_be16(mac_addrs[0]);		 
++		 
+ 		 iowrite32(MACL, (ioaddr + CSR16));
+ 		 iowrite16(MACH, (ioaddr + CSR17));
+ 		 iowrite32(0x00000fff, (ioaddr + CSR18) );

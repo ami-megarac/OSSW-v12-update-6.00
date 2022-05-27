@@ -1,0 +1,16 @@
+--- linux-5.4.99/drivers/watchdog/Kconfig	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/watchdog/Kconfig	2021-03-23 15:04:04.903749611 +0800
+@@ -172,6 +172,13 @@
+ 	  Alternatively say M to compile the driver as a module,
+ 	  which will be called bd70528_wdt.
+ 
++config PILOT_WDT
++	  tristate "\"Pilot Watchdog\" "
++	  help
++	  This selects the "WATCHDOG 1" driver support for Aspeed's Pilot.
++	  If you enable this PILOT WATCHDOG 1 module will be active.
++
++
+ config DA9052_WATCHDOG
+ 	tristate "Dialog DA9052 Watchdog"
+ 	depends on PMIC_DA9052 || COMPILE_TEST

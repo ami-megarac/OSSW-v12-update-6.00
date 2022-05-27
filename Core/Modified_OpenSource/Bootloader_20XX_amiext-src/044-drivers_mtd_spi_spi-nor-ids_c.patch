@@ -1,0 +1,44 @@
+--- uboot_old/drivers/mtd/spi/spi-nor-ids.c	2022-04-26 14:26:08.731201973 +0800
++++ uboot/drivers/mtd/spi/spi-nor-ids.c	2022-04-25 16:25:58.305892990 +0800
+@@ -120,6 +120,11 @@
+ 		INFO("gd25b256d", 0xc84019, 0, 64 * 1024, 512,
+ 			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ)
+ 	},
++	{
++		INFO("gd25b512m", 0xc8471A, 0, 64 * 1024, 1024,
++			SECT_4K | SPI_NOR_QUAD_READ |
++			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
++	},
+ #endif
+ #ifdef CONFIG_SPI_FLASH_ISSI		/* ISSI */
+ 	/* ISSI */
+@@ -325,11 +330,21 @@
+ 			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
+ 			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
+ 	},
++        {
++                INFO("w25q01jvsfim", 0xef7021, 0, 64 * 1024, 2048,
++                        SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
++                        SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
++        },
+ 	{
+ 		INFO("w25q01jvsfiq", 0xef4021, 0, 64 * 1024, 2048,
+ 			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
+ 			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
+ 	},
++        {
++                INFO("w25q02jv", 0xef7022, 0, 64 * 1024, 4096,
++                        SECT_4K |/* SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |*/
++                        SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
++        },
+ 	{ INFO("w25q80", 0xef5014, 0, 64 * 1024,  16, SECT_4K) },
+ 	{ INFO("w25q80bl", 0xef4014, 0, 64 * 1024,  16, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+ 	{ INFO("w25q16cl", 0xef4015, 0, 64 * 1024,  32, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+@@ -342,6 +357,7 @@
+ 	/* XMC (Wuhan Xinxin Semiconductor Manufacturing Corp.) */
+ 	{ INFO("XM25QH64A", 0x207017, 0, 64 * 1024, 128, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+ 	{ INFO("XM25QH128A", 0x207018, 0, 64 * 1024, 256, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
++	{ INFO("XM25QH256C", 0x204019, 0, 64 * 1024, 512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+ #endif
+ 	{ },
+ };

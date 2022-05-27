@@ -1,0 +1,16 @@
+--- linux-5.4.99/arch/arm/boot/dts/skeleton.dtsi	2021-03-23 11:42:50.531448720 +0800
++++ linux/arch/arm/boot/dts/skeleton.dtsi	2021-03-19 17:18:44.679988500 +0800
+@@ -0,0 +1,13 @@
++/*
++ * Skeleton device tree; the bare minimum needed to boot; just include and
++ * add a compatible value.  The bootloader will typically populate the memory
++ * node.
++ */
++
++/ {
++	#address-cells = <1>;
++	#size-cells = <1>;
++	chosen { };
++	aliases { };
++	memory { device_type = "memory"; reg = <0 0>; };
++};

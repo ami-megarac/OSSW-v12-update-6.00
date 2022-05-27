@@ -1,0 +1,11 @@
+--- linux-5.4.99/drivers/mtd/Makefile	2021-03-23 16:15:41.126054997 +0800
++++ linux/drivers/mtd/Makefile	2021-03-23 15:58:29.858630803 +0800
+@@ -25,7 +25,7 @@
+ nftl-objs		:= nftlcore.o nftlmount.o
+ inftl-objs		:= inftlcore.o inftlmount.o
+ 
+-obj-y		+= chips/ lpddr/ maps/ devices/ nand/ tests/
++obj-y		+= chips/ lpddr/ spichips/ maps/ devices/ nand/ tests/
+ obj-y           += fmh/
+ 
+ obj-$(CONFIG_MTD_SPI_NOR)	+= spi-nor/

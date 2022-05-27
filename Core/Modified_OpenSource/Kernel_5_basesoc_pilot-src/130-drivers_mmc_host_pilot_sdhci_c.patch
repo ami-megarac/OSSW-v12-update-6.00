@@ -1,0 +1,71 @@
+--- linux/drivers/mmc/host/pilot_sdhc.c	2021-05-10 03:16:22.965136445 -0400
++++ linux.new/drivers/mmc/host/pilot_sdhc.c	2021-05-10 05:12:48.848789483 -0400
+@@ -77,6 +77,7 @@
+ 		*(volatile unsigned int *)(SE_SYS_CLK_VA_BASE + 0x758) = rerh;
+ 		*(volatile unsigned int *)(SE_SYS_CLK_VA_BASE + 0x750) = 0xD01;
+ 		is_reset_done=1;
++		mdelay(5);
+ 	}
+ }
+ 
+@@ -1954,6 +1955,7 @@
+ }
+ 
+ 
++#define NO_OF_SDHCS				CONFIG_SPX_FEATURE_GLOBAL_SD_SLOT_COUNT
+ static int pilot_sdhc_probe(struct platform_device *pdev)
+ {
+ 	struct mmc_host *mmc;
+@@ -1962,6 +1964,16 @@
+ 	struct resource *iomem;
+ 	u32 tempData;
+ 	int ret = 0;
++
++	if (((of_device_is_compatible(np, "pilot,sdhci-0")) && (NO_OF_SDHCS < 1)) ||
++		((of_device_is_compatible(np, "pilot,sdhci-1")) && (NO_OF_SDHCS < 2)) ||
++		((of_device_is_compatible(np, "pilot,emmc")) && (CONFIG_SPX_FEATURE_GLOBAL_EMMC_FLASH_COUNT == 0)) )
++	{
++		PILOT_SDHC_DEBUG ("Skipping pilot_sdhc_probe : %d %d %d\n", of_device_is_compatible(np, "pilot,sdhci-0"), 
++				of_device_is_compatible(np, "pilot,sdhci-1"), of_device_is_compatible(np, "pilot,emmc"));
++		return 0;
++	}
++
+ 	reset_sd_emmc();
+ 	if(!of_device_is_compatible(np, "pilot,emmc")) 
+ 	{
+@@ -2077,9 +2089,9 @@
+ 	PILOT_SDHC_DEBUG("SDHC using irq %x\n", host->irq);
+ 
+ 	mmc_add_host(mmc);
+-	if(of_device_is_compatible(np, "pilot,sdhc-0"))
++	if(of_device_is_compatible(np, "pilot,sdhci-0"))
+ 		pilot_sdhc[0] = host;
+-	if(of_device_is_compatible(np, "pilot,sdhc-1"))
++	if(of_device_is_compatible(np, "pilot,sdhci-1"))
+ 		pilot_sdhc[1] = host;
+ 	if(of_device_is_compatible(np, "pilot,emmc"))
+ 		pilot_sdhc[2] = host;
+@@ -2097,9 +2109,9 @@
+ 
+ 	PILOT_SDHC_DEBUG("Entered %s\n", __FUNCTION__);
+ 
+-	if(of_device_is_compatible(np, "pilot,sdhc-0"))
++	if(of_device_is_compatible(np, "pilot,sdhci-0"))
+ 		host = pilot_sdhc[0];
+-	if(of_device_is_compatible(np, "pilot,sdhc-1"))
++	if(of_device_is_compatible(np, "pilot,sdhci-1"))
+ 		host = pilot_sdhc[1];
+ 	if(of_device_is_compatible(np, "pilot,emmc"))
+ 		host = pilot_sdhc[2];
+@@ -2118,9 +2130,9 @@
+ 	iounmap((u32 *)host->iobase);
+ 	mmc_free_host(host->mmc);
+ 
+-	if(of_device_is_compatible(np, "pilot,sdhc-0"))
++	if(of_device_is_compatible(np, "pilot,sdhci-0"))
+ 		pilot_sdhc[0] = NULL;
+-	if(of_device_is_compatible(np, "pilot,sdhc-1"))
++	if(of_device_is_compatible(np, "pilot,sdhci-1"))
+ 		pilot_sdhc[1] = NULL;
+ 	if(of_device_is_compatible(np, "pilot,emmc"))
+ 		pilot_sdhc[2] = NULL;

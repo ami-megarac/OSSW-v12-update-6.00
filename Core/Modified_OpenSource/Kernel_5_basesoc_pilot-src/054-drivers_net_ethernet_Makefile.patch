@@ -1,0 +1,10 @@
+--- linux-5.4.99/drivers/net/ethernet/Makefile	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/net/ethernet/Makefile	2021-03-23 14:43:38.642184956 +0800
+@@ -32,6 +32,7 @@
+ obj-$(CONFIG_CX_ECAT) += ec_bhf.o
+ obj-$(CONFIG_DM9000) += davicom/
+ obj-$(CONFIG_DNET) += dnet.o
++obj-$(CONFIG_PILOT4_NET_TULIP) += pilot_tulip/
+ obj-$(CONFIG_NET_VENDOR_DEC) += dec/
+ obj-$(CONFIG_NET_VENDOR_DLINK) += dlink/
+ obj-$(CONFIG_NET_VENDOR_EMULEX) += emulex/

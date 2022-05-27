@@ -1,0 +1,1535 @@
+--- linux-5.4.99/drivers/mtd/nand/pilot4_nand.c	2021-03-23 14:38:07.458886625 +0800
++++ linux/drivers/mtd/nand/pilot4_nand.c	2021-03-19 17:18:45.071958100 +0800
+@@ -0,0 +1,1532 @@
++/*
++ *  drivers/mtd/pilot4_nand.c
++ *
++ *  Derived from drivers/mtd/spia.c
++ * 	 Copyright (C) 2000 Steven J. Hill (sjhill@realitydiluted.com)
++ */
++/*
++ * Copyright (C) 2003-2015 Emulex. All rights reserved.
++ * EMULEX is a trademark of Emulex.
++ * www.emulex.com
++ * This program is free software; you can redistribute it and/or modify it under the terms of version 2
++ * of the GNU General Public License as published by the Free Software Foundation.
++ * This program is distributed in the hope that it will be useful. ALL EXPRESS OR IMPLIED CONDITIONS,
++ * REPRESENTATIONS AND WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY, FITNESS FOR A
++ * PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS
++ * ARE HELD TO BE LEGALLY INVALID. See the GNU General Public License for more details, a copy of which
++ * can be found in the file COPYING included with this package.
++ */
++
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/version.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/nand.h>
++#include <linux/mtd/partitions.h>
++#include <linux/bitops.h>
++#include <linux/dma-mapping.h>
++#include <asm/io.h>
++#include <asm/sizes.h>
++#include <asm/setup.h>
++#include <linux/semaphore.h>
++#ifdef CONFIG_OF
++#include <linux/of_irq.h>
++#include <linux/of_platform.h>
++#include <linux/of.h>
++#endif
++#include "pilot4_nand.h"
++#ifndef LINUX_3_4_41
++#define init_MUTEX_LOCKED(sem)  sema_init(sem, 0)
++#endif
++static int hwecc = 0;
++module_param(hwecc , int, S_IRUGO|S_IWUSR);
++
++static const char Copyright[] = "Copyright � 2004-2015 Emulex. All rights reserved.";
++
++static unsigned int nandtim0 = 0x9110C99;
++module_param(nandtim0, uint, S_IRUGO|S_IWUSR);
++
++static unsigned int nandtim1 = 0x8932891;
++module_param(nandtim1, uint, S_IRUGO|S_IWUSR);
++
++static unsigned int nandtim2 = 0x520AA;
++module_param(nandtim2, uint, S_IRUGO|S_IWUSR);
++
++static unsigned int nand_alternate_lmem = 1;
++module_param(nand_alternate_lmem, uint, S_IRUGO|S_IWUSR);
++
++static unsigned int nand_erase_blocks = 0;
++module_param(nand_erase_blocks, uint, S_IRUGO|S_IWUSR);
++
++static int total_erase_blks_param;
++module_param(total_erase_blks_param, int, S_IRUGO|S_IWUSR);
++//oob224_ecclayout Some 4k page devices have 224 byte oob area which Linux by default wont support 
++//so enable this if we are using  such device
++static int oob224_ecclayout = 0;
++module_param(oob224_ecclayout, int, S_IRUGO|S_IWUSR);
++
++static int nand_use_dma = 1;
++module_param(nand_use_dma, int, S_IRUGO|S_IWUSR);
++
++static int nand_read_spare_dma = 0;
++module_param(nand_read_spare_dma, int, S_IRUGO|S_IWUSR);
++
++struct pilot_nand_priv {
++	struct semaphore	pilot_nand_sem;
++	unsigned long 	  intr_status;
++};
++
++#define DRIVER_NAME "pilot4-nand"
++#define DRIVER_VERSION "1.0"
++
++#define DBG_LVL_ERR 	2
++#define DBG_LVL_WARN	1
++#define DBG_LVL_INFO	0
++
++#define DBG_LVL		2 //current debug level
++
++#if 1
++#define PILOT_NAND_DBG(LVL, x...)	if(LVL > DBG_LVL_INFO)\
++						printk(x)
++#else
++#define PILOT_NAND_DBG(LVL, x...) 
++#endif
++
++#define READ_REG32(a)     (*((volatile unsigned int *) (a)))
++#define WRITE_REG32(a,d)  (*((volatile unsigned int *) (a)) = d)
++
++/*
++ * MTD structure for PILOT board
++ */
++static struct mtd_info *pilot_mtd = NULL;
++
++u8* pilot4_nand_base;
++
++void Nand_Setup(void);
++
++/*
++ * Define partitions for flash devices
++ */
++
++static struct mtd_partition partition_info128M[] = {
++        { .name         = "PILOT flash partition 1",
++          .offset       = 0x0,
++          .size         = (8) * SZ_1M },
++        { .name         = "PILOT flash partition 2",
++          .offset       = (8) * SZ_1M, 
++          .size         = (8) * SZ_1M },
++        { .name         = "PILOT flash partition 3",
++          .offset       = (16) * SZ_1M, 
++          .size         = (7) * SZ_1M },
++        { .name         = "PILOT flash partition 4",
++          .offset       = (96) * SZ_1M, 
++          .size         = (32) * SZ_1M },
++};
++#ifndef CONFIG_OF
++static struct mtd_partition partition_info2G[] = {
++        { .name         = "PILOT 512MB flash partition 1",
++          .offset       = 0x0,
++          .size         = (512) * SZ_1M },
++        { .name         = "PILOT 512MB flash partition 2",
++          .offset       = (512) * SZ_1M, 
++          .size         = (512) * SZ_1M },
++        { .name         = "PILOT 512MB flash partition 3",
++          .offset       = (1024) * SZ_1M, 
++          .size         = (512) * SZ_1M },
++        { .name         = "PILOT 512MB flash partition 4",
++          .offset       = (1536) * SZ_1M, 
++          .size         = (512) * SZ_1M },
++};
++#endif
++static struct mtd_partition partition_info512M[] = {
++        { .name         = "PILOT flash partition 1",
++          .offset       = 0x0,
++          .size         = (128) * SZ_1M },
++        { .name         = "PILOT flash partition 2",
++          .offset       = (128) * SZ_1M,
++          .size         = (128) * SZ_1M },
++        { .name         = "PILOT flash partition 3",
++          .offset       = (256) * SZ_1M,
++          .size         = (128) * SZ_1M },
++        { .name         = "PILOT flash partition 4",
++          .offset       = (384) * SZ_1M,
++          .size         = (128) * SZ_1M },
++
++};
++
++static struct mtd_partition partition_info256M[] = {
++        { .name         = "PILOT flash partition 1",
++          .offset       = 0x0,
++          .size         = (256) * SZ_1M },
++};
++#define NUM_PARTITIONS 4
++
++#define NOTALIGNED(x) (x & (mtd->oobblock-1)) != 0
++
++#define pilot_nand_verify_pages(...) (0) // NOTE : Currently Verify pages not supported
++
++void pilot_nand_dump_regs(void){
++	int i;
++	for(i=0; i<0x80; i=i+4){
++		printk("Reg offset 0x%x is 0x%x \n", i, (unsigned int)*((volatile unsigned long *)(pilot4_nand_base + i)));
++	}
++}
++
++/**
++ * nand_wait - wait until the command is done
++ * @mtd:        MTD device structure
++ * @this:       NAND chip structure
++ * @state:      state to select the max. timeout value
++ *
++ * Wait for command done. This applies to erase and program only
++ * Erase can take up to 400ms and program up to 20ms according to
++ * general NAND and SmartMedia specs
++ *
++*/
++//if DMACTRL_RYBSY 1 device is free/ready , 0 is busy
++static int pilot_nand_wait(struct mtd_info *mtd, struct nand_chip *this)
++{
++	int timeout = 1000000;
++	PILOT_NAND_DBG(DBG_LVL_INFO, "Entered %s \n", __FUNCTION__);
++	while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY)){
++                timeout--;
++                if(timeout <= 0) {
++                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                        panic("");
++#endif
++                        break;
++                }
++                udelay(1);
++	}
++	PILOT_NAND_DBG(DBG_LVL_INFO, "Exit %s \n", __FUNCTION__);
++	return 0;
++}
++
++unsigned long current_state;
++unsigned long current_column;
++unsigned long current_page;
++unsigned long length_pending;
++volatile u8 * 		scratch_dma_v_addr;
++dma_addr_t	scratch_dma_p_addr;	
++
++//2g >> 1 (extra left shift of 1 bcas of h/w reqrt)
++extern void switch_to_dma(void);
++#ifdef PILOT_NAND_DBG_FLG
++static int start_my_print;
++static volatile int wait_for_read_interrupt = 0;
++static volatile int wait_for_write_interrupt = 0;
++#endif
++static int total_hw_blk_count = 4;
++static int ncblkctrl_bit30 = 0;
++static void read_hw_cmd(struct mtd_info *mtd, int poll_for_complt, int len)
++{
++	struct nand_chip *this = mtd->priv;
++	int count = total_hw_blk_count;
++	struct pilot_nand_priv * priv = (struct pilot_nand_priv *)(((unsigned long) this) + sizeof(struct nand_chip));
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++
++	PILOT_NAND_DBG(DBG_LVL_INFO,"Nand read current_page %lx start address is %lx End is %lx current_column %lx\n",
++		current_page, start_addr, start_addr + 0xFFF, current_column);
++	switch_to_dma();
++	if(start_addr >= DMA_LIMIT)
++		panic("read_hw_cmd %lx  >= DMA_LIMIT\n", start_addr);
++#ifdef PILOT_NAND_DBG_FLG
++	if(start_my_print)
++		printk("Nand read current_page %lx start address is %lx End is %lx current_column %x len %d pilot4_nand_base %x %x\n",
++		current_page, start_addr, start_addr + 0xFFF, current_column, len, pilot4_nand_base, scratch_dma_p_addr);
++#endif
++	if((current_column % 256) || (len % 256)) {
++		panic("current_column/len not multiple of 256 len %d\n", len);
++	}
++
++	if(hwecc == 1) {
++		*((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)) = 0x00050200;//Will always be for 2k page
++		*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)) |= (NACCTL0_ACCSP1ST);
++	} else {
++		*((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)) = (ncblkctrl_bit30 | ((count << 16) |0x200));//For 4k/2K page
++		*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)) &= ~(NACCTL0_ACCSP1ST);
++	}
++
++	*((volatile unsigned long *)(pilot4_nand_base + NCCFG0)) = 0x00080080;
++	*((volatile unsigned long *)(pilot4_nand_base + NCXDDRADDR)) = scratch_dma_p_addr;
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCSTART)) = (start_addr + 0);
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCEND)) = start_addr + (mtd->writesize - 1);
++
++        *((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) = (DMACTRL_STARTRD | DMACTRL_RDINTEN);
++
++        *((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) = STRTCMD_STARTCMD;
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_read_interrupt = 1;
++#endif
++        /* Interrupt mode */
++	down(&priv->pilot_nand_sem);
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_read_interrupt = 0;
++#endif
++	if(hwecc == 1){
++		if (unlikely((priv->intr_status & 0x10000000))) {
++			printk("Fatal error while hardware ECC\n");
++        	}
++	}
++        priv->intr_status = 0;
++	if(poll_for_complt) {
++		int timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_STARTRD)) == (DMACTRL_STARTRD)){
++	                timeout--;
++	                if(timeout <= 0) {
++	                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++	                        panic("");
++#endif
++	                        break;
++	                }
++	                udelay(1);
++		}
++		timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY)){
++	                timeout--;
++	                if(timeout <= 0) {
++	                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++	                        panic("");
++#endif
++	                        break;
++	                }
++	                udelay(1);
++		}
++	}
++        PILOT_NAND_DBG(DBG_LVL_INFO, "DMACTRL before write strt command is %lx\n", *((volatile unsigned long *)(pilot4_nand_base + DMACTRL)));
++
++	
++	PILOT_NAND_DBG(DBG_LVL_INFO, "ReCurrent column is %lx\n", current_column);
++	*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)) &= ~(NACCTL0_ACCSP1ST);
++}
++
++static void read_2k_spare_area(struct mtd_info *mtd, int poll_for_complt, int len)
++{
++	struct nand_chip *this = mtd->priv;
++	struct pilot_nand_priv * priv = (struct pilot_nand_priv *)(((unsigned long) this) + sizeof(struct nand_chip));
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++
++	PILOT_NAND_DBG(DBG_LVL_INFO,"read_2k_spare_area current_page %lx start address is %lx End is %lx current_column %lx\n",
++		current_page, start_addr, start_addr + 0xFFF, current_column);
++	switch_to_dma();
++	if(start_addr >= DMA_LIMIT)
++		panic("read_2k_spare_area %lx  >= DMA_LIMIT\n", start_addr);
++#ifdef PILOT_NAND_DBG_FLG
++	if(start_my_print)
++		printk("read_2k_spare_area current_page %lx start address is %lx End is %lx current_column %x len %d pilot4_nand_base %x %x\n",
++		current_page, start_addr, start_addr + 0xFFF, current_column, len, pilot4_nand_base, scratch_dma_p_addr);
++#endif
++	if((current_column % 256)) {
++		panic("current_column not multiple of 256 len %d\n", len);
++	}
++
++	*((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)) = (ncblkctrl_bit30 | ((5 << 16) |0x200));//For 2K page
++	*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)) |= NACCTL0_ACCSP1ST;
++
++	*((volatile unsigned long *)(pilot4_nand_base + NCCFG0)) = 0x00080080;
++	*((volatile unsigned long *)(pilot4_nand_base + NCXDDRADDR)) = scratch_dma_p_addr;
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCSTART)) = (start_addr);
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCEND)) = start_addr + (mtd->writesize - 1);
++
++        *((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) = (DMACTRL_STARTRD | DMACTRL_RDINTEN);
++
++        *((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) = STRTCMD_STARTCMD;
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_read_interrupt = 1;
++#endif
++        /* Interrupt mode */
++	printk("read_2k_spare_area current_page %lx start address is %lx End is %lx current_column %lx\n",
++		current_page, start_addr, start_addr + (mtd->writesize - 1), current_column);
++	down(&priv->pilot_nand_sem);
++	printk("Got interrupt\n");
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_read_interrupt = 0;
++#endif
++	priv->intr_status = 0;
++	if(poll_for_complt) {
++		int timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_STARTRD)) == (DMACTRL_STARTRD)){
++	                timeout--;
++	                if(timeout <= 0) {
++	                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++	                        panic("");
++#endif
++	                        break;
++	                }
++	                udelay(1);
++		}
++		timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY)){
++	                timeout--;
++	                if(timeout <= 0) {
++	                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++	                        panic("");
++#endif
++	                        break;
++	                }
++	                udelay(1);
++		}
++	}
++        PILOT_NAND_DBG(DBG_LVL_INFO, "DMACTRL before write strt command is %lx\n", *((volatile unsigned long *)(pilot4_nand_base + DMACTRL)));
++
++	
++	PILOT_NAND_DBG(DBG_LVL_INFO, "read_2k_spare_area column is %lx\n", current_column);
++	*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)) &= ~(NACCTL0_ACCSP1ST);
++}
++
++static void write_2k_spare_area(struct mtd_info *mtd, int poll_for_complt, int len)
++{
++	struct nand_chip *this = mtd->priv;
++	struct pilot_nand_priv * priv = (struct pilot_nand_priv *)(((unsigned long) this) + sizeof(struct nand_chip));
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++
++	PILOT_NAND_DBG(DBG_LVL_INFO,"write_hw_cmd:Nand start address is %lx End is %lx\n", start_addr, start_addr + (mtd->writesize - 1));
++
++	switch_to_dma();
++
++	if(start_addr >= DMA_LIMIT)
++		panic("write_hw_cmd %lx  >= DMA_LIMIT\n", start_addr);
++	
++	*((volatile unsigned long *)(pilot4_nand_base + NCCFG0)) = 0x00080080;
++	*((volatile unsigned long *)(pilot4_nand_base + NCXDDRADDR)) = scratch_dma_p_addr + mtd->writesize;
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCSTART)) = start_addr + mtd->writesize;
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCEND)) = start_addr + (mtd->writesize + (mtd->oobsize - 1));
++	*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)) &= ~(NACCTL0_ACCSP1ST);
++	*((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)) = ncblkctrl_bit30 | ((1 << 16) |mtd->oobsize) ;//For 4k page
++	*((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) = (DMACTRL_WRINTEN | DMACTRL_WRERRINTEN | DMACTRL_STARTWR);
++
++#ifdef PILOT_NAND_DBG_FLG
++	printk("Wr: NCBLKCTRL %x NCCFG0 %x NANDSRCSTART %x NANDSRCEND %x\n", *((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)),
++		*((volatile unsigned long *)(pilot4_nand_base + NCCFG0)), *((volatile unsigned long *)(pilot4_nand_base + NANDSRCSTART)),
++		*((volatile unsigned long *)(pilot4_nand_base + NANDSRCEND)));
++#endif
++
++#ifdef PILOT_NAND_DBG_FLG
++		int result;
++                PILOT_NAND_DBG(DBG_LVL_INFO, "DMACTRL before write strt command is %x\n", *((volatile unsigned long *)(pilot4_nand_base + DMACTRL)));
++		for(result = 0; result < 64; result = result+8){
++		PILOT_NAND_DBG(DBG_LVL_INFO,"%x %x %x %x %x %x %x %x", buf[result], buf[result+1], buf[result +2], buf[result +3],
++						buf[result +4], buf[result+5], buf[result +6], buf[result +7]);
++		}
++#endif
++	*((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) = STRTCMD_STARTCMD;
++	/* Interrupt mode */
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_write_interrupt = 1;
++#endif
++	//printk("wait for write interrupt\n");
++	down(&priv->pilot_nand_sem);
++	//printk("Got write interrupt\n");
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_write_interrupt = 0;
++#endif
++	if(hwecc == 1) {
++		if((priv->intr_status & DMACTRL_WRERR)) {
++			PILOT_NAND_DBG(DBG_LVL_ERR, "Write Error interrupt received\n");
++		} else if((priv->intr_status & 0x10000000)) {
++			PILOT_NAND_DBG(DBG_LVL_ERR, "Fatal error while hardware ECC\n");
++		}
++	} else {
++		if((priv->intr_status & DMACTRL_WRERR)) {
++			PILOT_NAND_DBG(DBG_LVL_ERR, "Write Error interrupt received\n");
++		}
++	}
++	priv->intr_status = 0;
++}
++
++/**
++ * pilot_read_buf - read chip data into buffer
++ * @mtd:        MTD device structure
++ * @buf:        buffer to store date
++ * @len:        number of bytes to read
++ *
++ * Default read function for 8bit buswith
++ */
++extern void pilot4_read_oob(struct mtd_info * mtd, u_char * , int );
++extern void pilot4_read_page(struct mtd_info *mtd, const u_char *buf, int len);
++static void pilot_read_buf(struct mtd_info *mtd, u_char *buf, int len)
++{
++  	struct nand_chip *this = mtd->priv;
++	unsigned long start_addr = 0;
++	int use_pio = 0;
++#ifdef PILOT_NAND_DBG_FLG
++	static int once = 1;
++	if(start_my_print || wait_for_write_interrupt || wait_for_read_interrupt) {
++		printk("pilot_read_buf current_state %d len %d current_column %d current_page %x %s\n", current_state, len, current_column, current_page, current->comm);
++		if(wait_for_write_interrupt || wait_for_read_interrupt) {
++			printk("R:wait_for_write_interrupt %d wait_for_read_interrupt %d\n", wait_for_write_interrupt , wait_for_read_interrupt);
++		}
++		if(current->comm && strcmp(current->comm, "current->comm") == 0) {
++			if(once)
++				show_stack(NULL, NULL);
++			once = 0;
++		}
++	}
++#endif
++
++	start_addr = current_page * ((1 << (this->page_shift+1)));
++	if(start_addr >= DMA_LIMIT)
++		use_pio = 1;
++	if(current_state == PILOT_READ_PARAM) {
++		memcpy(buf, (u8*)(scratch_dma_v_addr + current_column), len);
++		current_column += len;
++		return;
++	} else if(current_state == NAND_CMD_READOOB) {
++		if(current_column != mtd->writesize)
++			panic("current_column != mtd->writesize\n");
++		if(nand_read_spare_dma && nand_use_dma && mtd->writesize == SZ_2K) {
++			read_2k_spare_area(mtd, 0 ,len);
++			memcpy(buf, (u8*)(scratch_dma_v_addr + mtd->writesize), len);
++		} else {
++			pilot4_read_oob(mtd, buf, len);
++			pilot_nand_wait(mtd, this);
++		}
++		return;
++	}
++	if(current_column >= mtd->writesize) {
++		if(current_column != mtd->writesize) {
++			int col = current_column;
++			//This will get called.
++			pilot4_read_oob(mtd, (u8*)scratch_dma_v_addr, mtd->oobsize);
++			memcpy(buf, (u8*)(scratch_dma_v_addr + (col - mtd->writesize)), len);
++		} else {
++			if(nand_read_spare_dma && nand_use_dma && mtd->writesize == SZ_2K) {
++				read_2k_spare_area(mtd, 0 , len);
++				memcpy(buf, (u8*)(scratch_dma_v_addr + mtd->writesize), len);
++			} else {
++				pilot4_read_oob(mtd, buf, len);
++			}
++		}
++		pilot_nand_wait(mtd, this);
++		return;
++	}
++	if(!nand_use_dma || use_pio) {
++		pilot4_read_page(mtd, buf, len);
++		pilot_nand_wait(mtd, this);
++		cond_resched();
++		return;
++	} else  {
++#ifdef PILOT_NAND_DBG_FLG
++		int result;
++#endif
++		read_hw_cmd(mtd, 0, len);
++		pilot_nand_wait(mtd, this);
++      		memcpy(buf, (u8*)(scratch_dma_v_addr + current_column), len);
++		current_column += len;
++#ifdef PILOT_NAND_DBG_FLG
++		for(result = 0; result < 64 && (0 && current_page == 0x20000); result = result+8) {
++			PILOT_NAND_DBG(DBG_LVL_WARN,"%x %x %x %x %x %x %x %x", buf[result], buf[result+1], buf[result +2], buf[result +3],
++						buf[result +4], buf[result+5], buf[result +6], buf[result +7]);
++		}
++#endif
++	}
++	
++	{
++#ifdef PILOT_NAND_DBG_FLG
++		int result;
++		for(result = 0; result < 64 && current_page == 0x20000; result = result+8){
++		PILOT_NAND_DBG(DBG_LVL_INFO,"%x %x %x %x %x %x %x %x", buf[result], buf[result+1], buf[result +2], buf[result +3],
++						buf[result +4], buf[result+5], buf[result +6], buf[result +7]);
++		}
++#endif
++	}
++}
++
++static void write_hw_cmd(struct mtd_info *mtd)
++{
++	struct nand_chip *this = mtd->priv;
++	struct pilot_nand_priv * priv = (struct pilot_nand_priv *)(((unsigned long) this) + sizeof(struct nand_chip));
++	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++
++	PILOT_NAND_DBG(DBG_LVL_INFO,"write_hw_cmd:Nand start address is %lx End is %lx\n", start_addr, start_addr + (mtd->writesize - 1));
++
++	switch_to_dma();
++
++	if(start_addr >= DMA_LIMIT)
++		panic("write_hw_cmd %lx  >= DMA_LIMIT\n", start_addr);
++	
++	*((volatile unsigned long *)(pilot4_nand_base + NCCFG0)) = 0x00080080;
++	*((volatile unsigned long *)(pilot4_nand_base + NCXDDRADDR)) = scratch_dma_p_addr;
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCSTART)) = start_addr;
++	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCEND)) = start_addr + (mtd->writesize - 1);
++	*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)) &= ~(NACCTL0_ACCSP1ST);
++
++	if(hwecc == 1) {
++		*((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)) = 0x00050200;//Will always be for 2k page
++		*((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) = (DMACTRL_ACCESSSPARE | DMACTRL_WRINTEN | DMACTRL_WRERRINTEN | DMACTRL_STARTWR);
++	} else {
++		*((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)) = ncblkctrl_bit30 | ((total_hw_blk_count << 16) |0x200) ;//For 4k page
++		*((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) = (DMACTRL_WRINTEN | DMACTRL_WRERRINTEN | DMACTRL_STARTWR);
++	}
++
++#ifdef PILOT_NAND_DBG_FLG
++	printk("Wr: NCBLKCTRL %x NCCFG0 %x NANDSRCSTART %x NANDSRCEND %x\n", *((volatile unsigned long *)(pilot4_nand_base + NCBLKCTRL)),
++		*((volatile unsigned long *)(pilot4_nand_base + NCCFG0)), *((volatile unsigned long *)(pilot4_nand_base + NANDSRCSTART)),
++		*((volatile unsigned long *)(pilot4_nand_base + NANDSRCEND)));
++#endif
++
++#ifdef PILOT_NAND_DBG_FLG
++		int result;
++                PILOT_NAND_DBG(DBG_LVL_INFO, "DMACTRL before write strt command is %x\n", *((volatile unsigned long *)(pilot4_nand_base + DMACTRL)));
++		for(result = 0; result < 64; result = result+8){
++		PILOT_NAND_DBG(DBG_LVL_INFO,"%x %x %x %x %x %x %x %x", buf[result], buf[result+1], buf[result +2], buf[result +3],
++						buf[result +4], buf[result+5], buf[result +6], buf[result +7]);
++		}
++#endif
++	*((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) = STRTCMD_STARTCMD;
++	/* Interrupt mode */
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_write_interrupt = 1;
++#endif
++	down(&priv->pilot_nand_sem);
++#ifdef PILOT_NAND_DBG_FLG
++	wait_for_write_interrupt = 0;
++#endif
++	if(hwecc == 1) {
++		if((priv->intr_status & DMACTRL_WRERR)) {
++			PILOT_NAND_DBG(DBG_LVL_ERR, "Write Error interrupt received\n");
++		} else if((priv->intr_status & 0x10000000)) {
++			PILOT_NAND_DBG(DBG_LVL_ERR, "Fatal error while hardware ECC\n");
++		}
++	} else {
++		if((priv->intr_status & DMACTRL_WRERR)) {
++			PILOT_NAND_DBG(DBG_LVL_ERR, "Write Error interrupt received\n");
++		}
++	}
++	priv->intr_status = 0;
++}
++/**
++ * pilot_write_buf - Pilot write buffer to chip
++ * @mtd:        MTD device structure
++ * @buf:        data buffer
++ * @len:        number of bytes to write
++ *
++ * Default write function for 8bit buswith
++ */
++ #ifdef PILOT_NAND_DBG_FLG
++int start_print = 0;
++#endif
++extern void pilot4_write_page(struct mtd_info *mtd, const u_char *buf, int len);
++extern void pilot4_write_oob(struct mtd_info *mtd, const u_char *buf, int len);
++static void pilot_write_buf(struct mtd_info *mtd, const u_char *buf, int len)
++{
++	int use_pio = 0;
++	unsigned long start_addr;
++  	struct nand_chip *this = mtd->priv;
++
++	start_addr = current_page * ((1 << (this->page_shift+1)));
++
++	if(start_addr >= DMA_LIMIT)
++		use_pio = 1;
++#ifdef PILOT_NAND_DBG_FLG
++	if(start_my_print || wait_for_write_interrupt || wait_for_read_interrupt)
++		printk("\npilot_write_buf len %d current_page %lx current_column %lx %s\n", len, current_page, current_column, current->comm);
++	if(wait_for_write_interrupt || wait_for_read_interrupt) {
++		printk("W:wait_for_write_interrupt %d wait_for_read_interrupt %d\n", wait_for_write_interrupt , wait_for_read_interrupt);
++	}
++#endif
++	if(current_column == 0) {
++		if(nand_use_dma && !use_pio) {
++			if(current_column || (len % mtd->writesize))
++				panic("pilot_write_buf len %d current_page %lx cur_col %lx\n", len, current_page, current_column);
++		      	memcpy((u8*)scratch_dma_v_addr, buf, len);
++			write_hw_cmd(mtd);
++			current_column = mtd->writesize;
++			pilot_nand_wait(mtd, mtd->priv);
++			return;
++		} else  {
++			pilot4_write_page(mtd, buf, len);
++#ifdef PILOT_NAND_DBG_FLG
++			if(start_my_print)
++				printk("\npilot_write_buf done len %d current_page %x\n", len, current_page);
++#endif
++			pilot_nand_wait(mtd, mtd->priv);
++			return;
++		}
++	}
++	if(current_column == mtd->writesize) {
++		if(nand_use_dma && mtd->writesize == SZ_2K) {
++			memcpy((u8*)(scratch_dma_v_addr + mtd->writesize), buf, len);
++			write_2k_spare_area(mtd, 0 ,len);
++		} else {
++			pilot4_write_oob(mtd, buf, len);
++			pilot_nand_wait(mtd, mtd->priv);
++		}
++		return;
++	}
++	panic("pilot_write_buf len %d current_page %lx cur_col %lx\n", len, current_page, current_column);
++}
++#ifdef SUPPORT_HWECC
++static int pilot_read_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
++				uint8_t *buf)
++{
++	read_hw_cmd(mtd, 0, mtd->writesize);
++	if(current_column != 0)
++		printk("pilot_read_page_hwecc current_column %lu current_page 0x%lx\n",
++			current_column, current_page);
++	
++	memcpy(chip->oob_poi, (u8*)scratch_dma_v_addr + 2048, mtd->oobsize);
++	memcpy(buf, (u8*)scratch_dma_v_addr + current_column, chip->ecc.size);
++	return 0;
++}
++
++static void pilot_write_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
++				  const uint8_t *buf)
++{
++#if 1
++	printk("pilot_write_page_hwecc\n");
++	if(current_column != 0) {
++		read_hw_cmd(mtd, 1, mtd->writesize);
++		printk("pilot_write_page_hwecc current_column %lu current_page 0x%lx\n",
++		current_column, current_page);
++		panic("");
++	}
++#endif
++    	memcpy((u8*)scratch_dma_v_addr + current_column, buf, chip->ecc.size);
++    	memcpy((u8*)scratch_dma_v_addr + 2048, chip->oob_poi, mtd->oobsize);
++	write_hw_cmd(mtd);
++}
++
++static int pilot_read_oob_std(struct mtd_info *mtd, struct nand_chip *chip,
++			     int page, int sndcmd)
++{
++	printk("pilot_read_oob_std:mtd->oobsize %d writesize %d page %x %x\n", mtd->oobsize, mtd->writesize, page, mtd->erasesize);
++	if (sndcmd) {
++		chip->cmdfunc(mtd, NAND_CMD_READOOB, 0, page);
++		sndcmd = 0;
++	}
++
++	read_hw_cmd(mtd, 0, mtd->writesize);
++	memcpy(chip->oob_poi, (u8*)(scratch_dma_v_addr + 4096), mtd->oobsize);
++	return sndcmd;
++}
++#endif
++static int pilot_read_oob_pio_std(struct mtd_info *mtd, struct nand_chip *chip,
++			     int page)
++{
++	printk("pilot_read_oob_pio_std:oobsize %d writesize %d page %x erssize %x chipsize %llx\n",
++		mtd->oobsize, mtd->writesize, page, mtd->erasesize, chip->chipsize);
++	chip->cmdfunc(mtd, NAND_CMD_READOOB, 0, page);
++	if(nand_read_spare_dma && nand_use_dma && mtd->writesize == SZ_2K) {
++		read_2k_spare_area(mtd, 0 , mtd->oobsize);
++		memcpy(chip->oob_poi, (u8*)(scratch_dma_v_addr + mtd->writesize), mtd->oobsize);
++	} else {
++		pilot4_read_oob(mtd, chip->oob_poi, mtd->oobsize);
++	}
++	return 0;
++}
++
++static int pilot_write_oob_pio_std(struct mtd_info *mtd, struct nand_chip *chip,
++			      int page)
++{
++	printk("%s\n", __FUNCTION__);
++	chip->cmdfunc(mtd, NAND_CMD_SEQIN, mtd->writesize, page);
++	read_hw_cmd(mtd, 1, mtd->writesize);
++	memcpy((u8*)(scratch_dma_v_addr + 2048), chip->oob_poi, mtd->oobsize);
++	write_hw_cmd(mtd);
++	/* Send command to program the OOB data */
++	chip->cmdfunc(mtd, NAND_CMD_PAGEPROG, -1, -1);
++	chip->waitfunc(mtd, chip);
++
++	return 0;
++}
++#ifdef SUPPORT_HWECC
++static int pilot_write_oob_std(struct mtd_info *mtd, struct nand_chip *chip,
++			      int page)
++{
++	printk("%s\n", __FUNCTION__);
++	chip->cmdfunc(mtd, NAND_CMD_SEQIN, mtd->writesize, page);
++	read_hw_cmd(mtd, 1, mtd->writesize);
++	memcpy((u8*)(scratch_dma_v_addr + 2048(, chip->oob_poi, mtd->oobsize);
++	write_hw_cmd(mtd);
++	/* Send command to program the OOB data */
++	chip->cmdfunc(mtd, NAND_CMD_PAGEPROG, -1, -1);
++	chip->waitfunc(mtd, chip);
++
++	return 0;
++}
++
++static int pilot_read_page_raw(struct mtd_info *mtd, struct nand_chip *chip,
++			      uint8_t *buf)
++{
++	printk("%s\n", __FUNCTION__);
++	read_hw_cmd(mtd, 0, mtd->writesize);
++	memcpy(chip->oob_poi, (u8*)(scratch_dma_v_addr + 2048), mtd->oobsize);
++	memcpy(buf, (u8*)(scratch_dma_v_addr + current_column), mtd->writesize);
++	return 0;
++}
++
++static void pilot_write_page_raw(struct mtd_info *mtd, struct nand_chip *chip,
++				const uint8_t *buf)
++{
++	printk("%s\n", __FUNCTION__);
++#if 1
++	if(current_column != 0) {
++		read_hw_cmd(mtd, 1, mtd->writesize);
++		printk("pilot_write_page_hwecc current_column %lu current_page 0x%lx\n",
++		current_column, current_page);
++		panic("pilot_write_page_raw");
++	}
++#endif
++    	memcpy((u8*)(scratch_dma_v_addr + current_column), buf, mtd->writesize);
++    	memcpy((u8*)(scratch_dma_v_addr + 2048), chip->oob_poi, mtd->oobsize);
++	write_hw_cmd(mtd);
++	return;
++}
++#endif
++
++/**
++ * pilot_read_byte - read one byte from the chip
++ * @mtd:        MTD device structure
++ *
++ * Default read function for 8bit buswith
++ */
++static u_char pilot_read_byte(struct mtd_info *mtd)
++{
++	u8 ret;
++        PILOT_NAND_DBG(DBG_LVL_INFO, "Entered %s \n", __FUNCTION__);
++	ret = *(scratch_dma_v_addr + current_column);
++	current_column ++;
++	
++	if(PILOT_READ_STATUS == current_state){
++	ret = 0xfe;
++		//printk("Read byte ret val is %x\n", ret);
++	}
++        return ret;
++}
++
++
++/*
++*	read device ready pin
++*/
++static int pilot_device_ready(struct mtd_info *mtd)
++{
++	if(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY))
++		return 0;
++	else
++		return 1;
++}
++static void pilot_nand_ecc_hwctl(struct mtd_info *mtd, int mode)
++{
++        return;
++}
++
++static void pilot_select_chip(struct mtd_info *mtd, int chip)
++{
++	return;
++}
++
++extern void pilot4_onfi_setNandBLKCTL (tU16 blkcnt, tU16 blksize);
++extern tU8 pilot4_onfi_genCLECycle (tU8 cmd);
++extern tU8 pilot4_onfi_gen_cmdALECycle (tU8 addr);
++extern tU8 pilot4_onfi_genDataOECycle (tU8 count, tU8 wr_rd_n);
++extern int nand_poll_lrx_pio_rxdt_rdy(void);
++extern tU32 nand_find_lmem_rdaddress(void);
++extern void nand_inc_lmemcpq_ptr(void);
++extern void switch_to_pio(void);
++extern void pilot4_pio_init(void);
++
++int pilot4_onfi_read_param(tU32 addr)
++{
++	unsigned long data32;
++	int i, j;
++	u8 * tmp = (u8*)scratch_dma_v_addr;
++
++	pilot4_onfi_setNandBLKCTL (0x1, 256);
++	pilot4_onfi_genCLECycle(NAND_CMD_PARAM);
++	pilot4_onfi_gen_cmdALECycle(addr);
++	for(j = 0;j < 3;j++) {
++		pilot4_onfi_genDataOECycle(0xff, 0);
++		nand_poll_lrx_pio_rxdt_rdy();
++		//Clearing lrx_pio_rxdt_rdy Latched
++		data32 = *((tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL));
++	  	*(tPVU32) (NAND_BASE + NCLMEMPIOPTRCTRL) = data32 | 0x01;
++		data32 = nand_find_lmem_rdaddress();
++		memcpy(tmp, (void*)data32, 256);
++		for(i=0; i< 0; i++) {
++			if((i%15) == 0)
++				PILOT_NAND_DBG(DBG_LVL_INFO,"\n\r");
++			PILOT_NAND_DBG(DBG_LVL_INFO,"%4x ", *(((volatile unsigned char *)tmp)+i));
++		}
++		nand_inc_lmemcpq_ptr ();
++		tmp += 256;
++	}
++	return 0;
++}
++/**
++ * pilot_command_lp - [DEFAULT] Send command to NAND large page device
++ * @mtd:	MTD device structure
++ * @command:	the command to be sent
++ * @column:	the column address for this command, -1 if none
++ * @page_addr:	the page address for this command, -1 if none
++ *
++ * Send command to NAND device. This is the version for the new large page devices
++ * We dont have the seperate regions as we have in the small page devices.
++ * We must emulate NAND_CMD_READOOB to keep the code compatible.
++ *
++ */
++int col_addr_shift, page_shift_addr, num_pages_per_block, total_erase_blks, total_block_bits;
++static void pilot_command_lp (struct mtd_info *mtd, unsigned command, int column, int page_addr_shift)
++{
++	register struct nand_chip *this = mtd->priv;
++        struct pilot_nand_priv * priv = (struct pilot_nand_priv *)(((unsigned long) this) + sizeof(struct nand_chip));
++	int timeout = 1000000;
++
++	current_state = 0;
++
++	current_column = 0;
++	if(column != -1) {
++		current_column = column;
++	}
++	if(page_addr_shift != -1) {
++		current_page = page_addr_shift;
++	}
++	if(unlikely(!col_addr_shift)) {
++		if(mtd->erasesize && mtd->writesize) {
++			int num_pages = mtd->erasesize/mtd->writesize;
++			col_addr_shift = fls(le32_to_cpu(mtd->writesize));
++			page_shift_addr = fls(le32_to_cpu(num_pages)) + col_addr_shift - 1;
++			num_pages_per_block = num_pages;
++			total_erase_blks = (this->chipsize >> (col_addr_shift - 1)) >> (fls(le32_to_cpu(num_pages)) - 1);//Assume all variables are always power of 2
++			total_block_bits = fls(le32_to_cpu(total_erase_blks)) - 1;
++			PILOT_NAND_DBG(DBG_LVL_INFO, "this->chipsize %lld\n", this->chipsize);
++			PILOT_NAND_DBG(DBG_LVL_INFO, "col_addr_shift %d page_shift_addr %d num_pages_per_block %d total_erase_blks %d total_block_bits %d\n",
++				col_addr_shift, page_shift_addr, num_pages_per_block, total_erase_blks, total_block_bits);
++			if(mtd->writesize == SZ_4K) {
++				total_hw_blk_count = 8;
++				ncblkctrl_bit30 = 0x40000000;//indicate its a 4K page
++                        } else if(mtd->writesize == SZ_2K) {
++                                dma_limit = 0x40000000;//For 2K DMA_LIMIT is 512MB
++				if(oob224_ecclayout) {
++					printk("Check if your spare area is really 224 bytes if not please reset oob224_ecclayout and reinitialize NAND!\n");
++					printk("Check if your spare area is really 224 bytes if not please reset oob224_ecclayout and reinitialize NAND!\n");
++				}
++                        }
++		}
++	}
++        switch (command) {
++
++        case NAND_CMD_CACHEDPROG:{
++                return;
++                }
++        case NAND_CMD_PAGEPROG:{
++                return;
++                }
++	case NAND_CMD_READOOB:{
++		current_state = NAND_CMD_READOOB;
++		current_column = mtd->writesize;
++		return;
++		}
++        case NAND_CMD_ERASE1:{
++		extern tU32 pilot4_blk_erase (tU32 nandpgstaddr);
++		int use_pio = 0;
++		//In our case do the actual erase based on the page
++        	unsigned long start_addr = current_page * ((1 << (this->page_shift+1)));
++		if(start_addr >= DMA_LIMIT)
++			use_pio = 1;
++		
++        	PILOT_NAND_DBG(DBG_LVL_INFO,"ERASE Nand start address is %lx End is %lx\n", start_addr, start_addr + 0xfFF);
++		if(use_pio || !nand_use_dma) {
++#ifdef PILOT_NAND_DBG_FLG
++			if(start_my_print)
++				printk("PIO:ERASE Nand start address is %lx NACCTL0 %x DMACTRL %x\n", start_addr, 
++					*((volatile unsigned long *)(pilot4_nand_base + NACCTL0)), *((volatile unsigned long *)(pilot4_nand_base + DMACTRL)));
++#endif
++			pilot4_blk_erase(start_addr);
++			return;
++		}
++		switch_to_dma();
++		if(mtd->writesize == SZ_4K)
++			start_addr =  start_addr >> 1;//For 4K 128 page per block we shdn't do << + 1
++#ifdef PILOT_NAND_DBG_FLG
++		printk("ERASE Nand start address is %lx in DMA current_page %d mtd->writesize %d\n", start_addr, current_page, mtd->writesize);
++#endif
++        	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCSTART)) = start_addr;
++        	*((volatile unsigned long *)(pilot4_nand_base + NANDSRCEND)) = start_addr + (mtd->writesize - 1);
++
++        	*((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) = (DMACTRL_ERERRINTEN | DMACTRL_ERINTEN | DMACTRL_STARTERASE);
++
++        	*((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) = STRTCMD_STARTCMD;
++        	/* Interrupt mode */
++		down(&priv->pilot_nand_sem);
++		if((priv->intr_status & DMACTRL_ERERR)){
++                        PILOT_NAND_DBG(DBG_LVL_ERR, "Erase Error interrupt received\n");
++                }
++        	priv->intr_status = 0;
++
++                return;
++                }
++        case NAND_CMD_ERASE2:{
++		//Note : In case of pilot4 do nothing
++                return;
++                }
++	case NAND_CMD_PARAM:
++		current_state = PILOT_READ_PARAM;
++		switch_to_pio();
++		pilot4_onfi_read_param(0);
++		current_column = 0;
++		switch_to_dma();
++		break;
++        case NAND_CMD_READID:{
++		current_state = PILOT_READ_ID;
++		if(current_column == 0x20) {
++			extern int pilot4_onfi_read_id(tU32 addr);
++			extern void read_data(void);
++			switch_to_pio();
++			pilot4_onfi_read_id(0x20);
++			current_column = 0;
++			switch_to_dma();
++			return;
++		}
++		*((volatile unsigned long *)(pilot4_nand_base + NACCTL0))  |= (1 << 31);
++		*((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) |= STRTCMD_STARTCMD;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + NACCTL0)) & (1 << 31)) == (1 << 31)){
++	                timeout--;
++	                if(timeout <= 0) {
++	                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++	                        panic("");
++#endif
++	                        break;
++	                }
++	                udelay(1);
++		}
++		timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY)){
++	                timeout--;
++	                if(timeout <= 0) {
++	                        printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++	                        panic("");
++#endif
++	                        break;
++	                }
++	                udelay(1);
++		}
++		*((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) |= DMACTRL_STARTID;
++		*((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) |= STRTCMD_STARTCMD;
++
++		timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_STARTID)) == (DMACTRL_STARTID)){
++                        timeout--;
++                        if(timeout <= 0) {
++                                printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                                panic("");
++#endif
++                                break;
++                        }
++                        udelay(1);
++		}
++		timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY)){
++                        timeout--;
++                        if(timeout <= 0) {
++                                printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                                panic("");
++#endif
++                                break;
++                        }
++                        udelay(1);
++		}
++		PILOT_NAND_DBG(DBG_LVL_INFO, "ID read is %lx\n", *(volatile unsigned long *)(pilot4_nand_base + IDDATA));
++		memcpy((u8*)scratch_dma_v_addr, (void *)(pilot4_nand_base + IDDATA), sizeof(unsigned long));
++		current_column = 0;
++		
++                return;
++                }
++        case NAND_CMD_SEQIN:{
++			current_state = NAND_CMD_SEQIN;
++                return;
++                }
++        case NAND_CMD_STATUS:{
++		current_state = PILOT_READ_STATUS;
++		return;
++		}
++#ifdef LINUX_3_4_41
++        case NAND_CMD_DEPLETE1:
++                return;
++
++        /*
++         * read error status commands require only a short delay
++         */
++        case NAND_CMD_STATUS_ERROR:
++        case NAND_CMD_STATUS_ERROR0:
++        case NAND_CMD_STATUS_ERROR1:
++        case NAND_CMD_STATUS_ERROR2:
++        case NAND_CMD_STATUS_ERROR3:
++                udelay(this->chip_delay);
++                return;
++#endif
++        case NAND_CMD_RESET:
++		*((volatile unsigned long *)(pilot4_nand_base + NACCTL0))  |= (1 << 31);
++		*((volatile unsigned long *)(pilot4_nand_base + STRTCMD)) |= STRTCMD_STARTCMD;
++		timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + NACCTL0)) & (1 << 31)) == (1 << 31)){
++                        timeout--;
++                        if(timeout <= 0) {
++                                printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                                panic("");
++#endif
++                                break;
++                        }
++                        udelay(1);
++		}
++		timeout = 1000000;
++		while(((*(volatile unsigned long *)(pilot4_nand_base + DMACTRL)) & (DMACTRL_RYBSY)) != (DMACTRL_RYBSY)){
++                        timeout--;
++                        if(timeout <= 0) {
++                                printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++                                panic("");
++#endif
++                                break;
++                        }
++                        udelay(1);
++		}
++                return;
++
++        case NAND_CMD_READ0:
++
++        /* This applies to read commands */
++        default:
++                /*
++                 * If we don't have access to the busy pin, we apply the given
++                 * command delay
++                */
++                if (!this->dev_ready) {
++                        udelay (this->chip_delay);
++                        return;
++                }
++
++        }
++
++        /* Apply this short delay always to ensure that we do wait tWB in
++         * any case on any machine. */
++//	ndelay (100);
++}
++
++u32 hwecc_fatal;
++static int pilot_calculate_ecc(struct mtd_info *mtd, const u_char *dat, u_char *ecc_code){
++	//It is calculated by h/w automatically for 2k pages when we write to page.
++	return 0;
++}
++
++static int pilot_correct_data(struct mtd_info *mtd, u_char *dat, u_char *read_ecc, u_char *calc_ecc){
++	//H/w automatically corrects 1/2 bit errors for 2K nand page devices
++	return 0;
++}
++
++//Do Initial Nand Controller Initialisation
++void Nand_Setup(void)
++{
++        PILOT_NAND_DBG(DBG_LVL_INFO,"Entered %s \n", __FUNCTION__);
++
++  	//Initialise Nand Controller hardware 
++	//Enable DMA conrol register
++
++        *((volatile unsigned int *)IO_ADDRESS(LDMA_BASE))|=1;
++}
++
++static irqreturn_t pilot_nand_irq(int irq, void *dev_id)
++{
++	struct pilot_nand_priv *priv = (struct pilot_nand_priv *)(((unsigned long)dev_id) + sizeof(struct mtd_info) + sizeof(struct nand_chip));
++	PILOT_NAND_DBG(DBG_LVL_INFO, "Entered %s\n", __FUNCTION__);
++
++	priv->intr_status = *((volatile unsigned long *)(pilot4_nand_base + DMACTRL));
++#ifdef PILOT_NAND_DBG_FLG
++	if(start_my_print)
++		printk("Entered %s int status is 0x%lx\n", __FUNCTION__, priv->intr_status);
++#endif
++	priv->intr_status &= (DMACTRL_RDINT | DMACTRL_WRINT | DMACTRL_ERINT | DMACTRL_WRERR | DMACTRL_ERERR);
++	*((volatile unsigned long *)(pilot4_nand_base + DMACTRL)) |= priv->intr_status;
++	if(hwecc == 1){
++		unsigned long err = 
++		*(volatile unsigned long *)(pilot4_nand_base + NACCTL0);
++
++		if(err & NACCTL0_FATALSTATUS){
++			printk("Fatal Error received\n");
++			priv->intr_status |= 0x10000000;
++			hwecc_fatal = 1;
++		}
++	}
++	PILOT_NAND_DBG(DBG_LVL_INFO, "Entered %s int status is 0x%lx\n", __FUNCTION__, priv->intr_status);
++ 	if(priv->intr_status != 0){	
++		up(&priv->pilot_nand_sem);
++		return IRQ_HANDLED;
++	}else{
++		return IRQ_NONE;
++	}
++}
++static struct nand_ecclayout pilot4_hw_ecclayout = {
++        .eccbytes = 12,
++        .eccpos = {
++                40, 41, 42, 43, 44, 45, 46, 47,
++                48, 49, 50, 51},
++        .oobfree = { {2, 50} }
++};
++
++static struct nand_ecclayout pilot4_sw_224_ecclayout = {
++	.eccbytes = 48,
++	.eccpos = {
++		   176, 177, 178, 179, 180, 181, 182, 183,
++		   184, 185, 186, 187, 188, 189, 190, 191,
++		   192, 193, 194, 195, 196, 197, 198, 199,
++		   200, 201, 202, 203, 204, 205, 206, 207,
++		   208, 209, 210, 211, 212, 213, 214, 215,
++		   216, 217, 218, 219, 220, 221, 222, 223},
++	.oobfree = {
++		{.offset = 2,
++		 .length = 174} }
++};
++#define VERIFY_ERASE
++#ifdef VERIFY_ERASE
++static unsigned char test_buf[4096];
++#endif
++
++/*
++ * Main initialization routine
++ */
++#ifdef CONFIG_OF
++int pilot_init (struct platform_device *pdev)
++#else
++int __init pilot_init (void)
++#endif
++{
++	struct nand_chip *this;
++	int err = 0;
++	int i = 0, j = 0, k = 0;
++	int blks_to_erase;
++	struct pilot_nand_priv * priv;
++	extern void test_write_ptr(int);
++	volatile u32 nand_strap, misc_clk_ctrl;
++	extern void p4_set_feature(u8 val);
++	int irqnr;
++	int size;
++	u32 base_addr;
++	int sedid = 0;
++
++#ifdef CONFIG_OF
++        struct device_node *np = pdev->dev.of_node;
++        struct resource *res;
++        struct mtd_part_parser_data ppdata;
++        ppdata.of_node = np;
++#endif
++	//First Make sure if the NAND strap is ON or not
++	nand_strap = *((volatile unsigned int *)IO_ADDRESS(SYSCONTROL+ 0xC));
++	//NAND strap is the Bit 5 in the System & Clock control register at 0x4010010C
++	if((nand_strap & 0x20) != 0x20) {
++		printk("\nNAND Strap Is NOT SET not loading NAND driver\n");
++		return -1;
++	}
++	sedid = *(volatile unsigned int *)IO_ADDRESS(SYSCONTROL + 0x50);
++	sedid = sedid & 0xFF;
++#ifdef CONFIG_MACH_PILOT4_ASIC
++	if(sedid != 0x42) {
++		//As per H/W suggestion lower the clock
++		printk("NAND:Not A2 Lowering the clock\n");
++		misc_clk_ctrl  = *(volatile unsigned int *)IO_ADDRESS(SYSCONTROL + 0x20);
++		misc_clk_ctrl = misc_clk_ctrl | 0x00020000;
++		*(volatile unsigned int *)IO_ADDRESS(SYSCONTROL + 0x20) = misc_clk_ctrl & 0xFFF2FFFF;
++	} else {
++		PILOT_NAND_DBG(DBG_LVL_INFO,"nand: using 100MHZ Clock\n");
++	}
++#endif
++	pilot4_pio_init();
++
++	/* Allocate memory for MTD device structure and private data */
++	pilot_mtd = kmalloc ((sizeof(struct mtd_info) + sizeof (struct nand_chip) + sizeof(struct pilot_nand_priv)),
++				GFP_KERNEL);
++
++	if (!pilot_mtd) {
++		PILOT_NAND_DBG(DBG_LVL_ERR, "Unable to allocate PILOT NAND MTD device structure.\n");
++		err = -ENOMEM;
++		goto out;
++	}
++	/* Get pointer to private data */
++	this = (struct nand_chip *) (&pilot_mtd[1]);
++
++	priv =(struct pilot_nand_priv *)(((unsigned long) this) + sizeof(struct nand_chip));
++
++	init_MUTEX_LOCKED(&priv->pilot_nand_sem);
++#ifdef CONFIG_OF
++
++        res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
++        if (!res) {
++                dev_err(&pdev->dev,
++                        "IRQ not found\n");
++                return -ENODEV;
++        }
++        irqnr = res->start;
++        PILOT_NAND_DBG(DBG_LVL_INFO,"nand: irq %d\n", irqnr);
++        res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++        if (!res) {
++                dev_err(&pdev->dev,
++                        "Register base not found");
++                return -ENODEV;
++        }
++        base_addr = res->start;
++        size =  (res->end - res->start) + 1;
++		PILOT_NAND_DBG(DBG_LVL_INFO,"nand res->start %x res->end %x\n", res->start, res->end);
++#endif
++
++	/* map physical address */
++	pilot4_nand_base = (u8*)ioremap_nocache(base_addr, size);
++	if(!pilot4_nand_base){
++		PILOT_NAND_DBG(DBG_LVL_ERR, "Ioremap NAND Mapping Failed\n");
++		err = -EIO;
++		goto out_mtd;
++	}
++
++	Nand_Setup(); 
++
++	/* THe interrupt is shared among all controllers */
++        err = request_irq(irqnr, pilot_nand_irq, IRQF_SHARED, np->name, pilot_mtd);
++        if (err) {
++                PILOT_NAND_DBG(DBG_LVL_ERR, DRIVER_NAME "ERROR: Couldn't get int %d: %d\n",
++                                irqnr, err);
++                return -ENXIO;
++        }
++
++
++	/*Allocation Page Size memory for DMA*/
++	scratch_dma_v_addr = dma_alloc_coherent(NULL, SZ_4K, &scratch_dma_p_addr, GFP_KERNEL);
++	PILOT_NAND_DBG(DBG_LVL_INFO,"\n scratch_dma_v_addr %p scratch_dma_p_addr %x allocating SZ_4K\n", scratch_dma_v_addr, scratch_dma_p_addr);
++	memset((void*)scratch_dma_v_addr, 0x11, SZ_4K);
++
++	/* Initialize structures */
++	memset((char *) pilot_mtd, 0, sizeof(struct mtd_info));
++	memset((char *) this, 0, sizeof(struct nand_chip));
++
++	/* Link the private data with the MTD structure */
++	pilot_mtd->priv = this;
++
++	pilot_mtd->owner = THIS_MODULE;
++	this->priv = priv;
++
++	/* Set address of NAND IO lines */
++	this->dev_ready = pilot_device_ready;
++	this->select_chip = pilot_select_chip;
++	this->cmdfunc   = pilot_command_lp;
++	this->read_byte = pilot_read_byte;
++	this->write_buf = pilot_write_buf;
++	this->read_buf  = pilot_read_buf;
++	this->options = NAND_SAMSUNG_LP_OPTIONS;
++	this->chip_delay = 700;		//
++	//Do A2 specific initialization
++	if(sedid == 0x42) {
++		PILOT_NAND_DBG(DBG_LVL_INFO,"A2 NCLMEMPGMRSOFTRST\n");
++		*((volatile unsigned long *)(pilot4_nand_base + 0x68)) |= 0x7;
++	}
++#ifndef CONFIG_MACH_PILOT4_ASIC
++	if(nandtim0)
++		*((volatile unsigned long *)(pilot4_nand_base + NANDTIM0)) = nandtim0;
++	if(nandtim1)
++		*((volatile unsigned long *)(pilot4_nand_base + NANDTIM1)) = nandtim1;
++	if(nandtim2)
++		*((volatile unsigned long *)(pilot4_nand_base + NANDTIM2)) = nandtim2;
++#endif
++	if(hwecc != 1) {
++		this->ecc.mode = NAND_ECC_SOFT;
++		if(oob224_ecclayout)
++			this->ecc.layout = &pilot4_sw_224_ecclayout;
++		this->ecc.read_oob = pilot_read_oob_pio_std;
++		this->ecc.write_oob = pilot_write_oob_pio_std;
++	}else{
++		this->ecc.mode = NAND_ECC_HW;
++		this->ecc.hwctl         = pilot_nand_ecc_hwctl;
++		this->ecc.calculate  = pilot_calculate_ecc;
++		this->ecc.correct  = pilot_correct_data;
++		this->ecc.size          = 2048;
++              this->ecc.layout = &pilot4_hw_ecclayout;
++			  
++#ifdef SUPPORT_HWECC
++		//Not support for 4K page and 2K page not implemented and tested
++		this->ecc.write_page = pilot_write_page_hwecc;
++		this->ecc.read_page = pilot_read_page_hwecc;
++		this->ecc.read_oob = pilot_read_oob_std;
++		this->ecc.write_oob = pilot_write_oob_std;
++		this->ecc.write_page_raw = pilot_write_page_raw;
++		this->ecc.read_page_raw = pilot_read_page_raw;
++#endif
++	}
++
++
++	if(hwecc == 1) {
++		//Enabled the NACCTL0and Correct bits and FATAL interrupts in the Hardware
++		*(volatile unsigned long *)(pilot4_nand_base + NACCTL0) = (NACCTL0_FATALERREN | NACCTL0_ECCENABLE | NACCTL0_WRECC | NACCTL0_ECCCORRECT);
++		for(err = 0; err < 12; err ++){
++			*(volatile unsigned long *)(pilot4_nand_base + NACCTL0) = ((err) << NACCTL0_ECCLOCINDEX_POS);
++			*(volatile unsigned long *)(pilot4_nand_base + ECCLOC) = (40 + err);
++		}
++		err = 0;
++		printk("The NACCTL0 VALUER IS %lx\n", *(volatile unsigned long *)(pilot4_nand_base + NACCTL0));
++	}
++	/* Scan to find existance of the device */
++	PILOT_NAND_DBG(DBG_LVL_INFO,"Before NAND scan %d nand_erase_blocks %d\n", this->ecc.mode, nand_erase_blocks);
++	*(volatile unsigned long *)(pilot4_nand_base + 0x54) = 0xffffffff;
++	if (nand_scan (pilot_mtd, 1)) {
++		err = -ENXIO;
++		goto out_ior;
++	}
++	p4_set_feature(0x2);
++	blks_to_erase = min(total_erase_blks, total_erase_blks_param);
++	for(i = 0;i < blks_to_erase && nand_erase_blocks;i++) {
++		int we_panic = 0;
++		printk("Erasing blk %d\n", i);
++		pilot_command_lp (pilot_mtd, NAND_CMD_ERASE1, 0, (i * NR_PAGES_PER_BLOCK));
++#ifdef VERIFY_ERASE
++		pilot_command_lp (pilot_mtd, NAND_CMD_READ0, 0, (i * NR_PAGES_PER_BLOCK));
++		pilot_read_buf(pilot_mtd, test_buf, pilot_mtd->writesize);
++		for(j=0;j < pilot_mtd->writesize;j++) {
++			if(1 && *(test_buf + j) != 0xFF) {
++				for(k=0;k<pilot_mtd->writesize && 0;k++) {
++					if((k%16) ==0)
++						printk("\n%d:",k);
++					printk("%x ", *(test_buf + k));
++				}
++				printk("Page %x not erased properly block %d\n", (i*NR_PAGES_PER_BLOCK), i);
++				break;
++			}
++		}
++		current_column = pilot_mtd->writesize;
++		pilot_read_buf(pilot_mtd, test_buf, pilot_mtd->oobsize);
++		for(j=0;j < pilot_mtd->oobsize;j++) {
++			if(*(test_buf + j) != 0xFF)
++				we_panic = 1;
++			if(0) {
++				if((j%16) ==0)
++					printk("\n%d:",j);
++				printk("%x ", *(test_buf + j));
++			}
++		}
++		if(we_panic)
++			printk("Page %x oob not erased properly block %d\n", (i*NR_PAGES_PER_BLOCK), i);
++#endif
++	}
++	PILOT_NAND_DBG(DBG_LVL_INFO, "\n\ndone init\n\n");
++	/* Register the partitions */
++	switch(pilot_mtd->size){
++		case SZ_512M: mtd_device_parse_register(pilot_mtd, NULL, NULL, partition_info512M, NUM_PARTITIONS); break;
++		case SZ_256M: mtd_device_parse_register(pilot_mtd, NULL, NULL, partition_info256M, NUM_PARTITIONS); break;
++		case SZ_128M: mtd_device_parse_register(pilot_mtd, NULL, NULL, partition_info128M, NUM_PARTITIONS); break; 
++		case SZ_2G:
++#ifdef CONFIG_OF
++                        mtd_device_parse_register(pilot_mtd, NULL, &ppdata, NULL, 0);
++#else
++                        mtd_device_parse_register(pilot_mtd, NULL, NULL, partition_info2G, 4);
++#endif
++			break;
++		default: {
++			PILOT_NAND_DBG(DBG_LVL_ERR, "Unsupported nand device\n"); 
++			err = -ENXIO;
++			goto out_ior;
++		}
++	}
++	goto out;
++
++out_ior:
++	 dma_free_coherent(NULL, SZ_4K, (void*)scratch_dma_v_addr, scratch_dma_p_addr);
++	 iounmap((void *)pilot4_nand_base);
++out_mtd:
++	kfree (pilot_mtd);
++out:
++	return err;
++}
++#ifdef CONFIG_OF
++static int se_pilot_nand_suspend(struct platform_device *dev, pm_message_t message)
++{
++        printk("Entered %s \n", __FUNCTION__);
++        return 0;
++}
++
++static int se_pilot_nand_resume(struct platform_device *dev)
++{
++        printk("Entered %s \n", __FUNCTION__);
++        return 0;
++}
++static int se_pilot_nand_remove(struct platform_device *pdev)
++{
++        printk("Entered %s \n", __FUNCTION__);
++        return 0;
++}
++
++static int pilot4_nand_probe(struct platform_device *pdev)
++{
++        return pilot_init(pdev);
++}
++
++static const struct of_device_id p4_of_nand_match[] = {
++        { .compatible = "pilot,nand", .data = NULL, },
++        {},
++};
++
++static struct platform_driver pilot_nand_driver = {
++        .remove         = se_pilot_nand_remove,//TODO
++        .suspend        = se_pilot_nand_suspend,
++        .resume         = se_pilot_nand_resume,
++        .probe          = pilot4_nand_probe,
++        .driver         = {
++                .owner  = THIS_MODULE,
++                .name   = (char *) "pilot4_nand",
++                .of_match_table = p4_of_nand_match,
++        },
++};
++
++static int pilot_of_init(void)
++{
++        return platform_driver_register(&pilot_nand_driver);
++}
++module_init(pilot_of_init);
++#else
++module_init(pilot_init);
++#endif
++#ifdef ERASE_DURING_BOOT
++static int erase_during_boot(char *str)
++{
++	unsigned long long offset;
++
++	if (sscanf(str, "%llu", &offset) == 1)
++		erase_blks = offset;
++
++	return 1;
++}
++
++__setup("erase_during_boot=", erase_during_boot);
++#endif
++/*
++ * Clean up routine
++ */
++#ifdef MODULE
++static void pilot_cleanup (void)
++{
++	printk("pilot_cleanup\n");
++	/* Release resources, unregister device */
++	nand_release (pilot_mtd);
++
++	free_irq(IRQ_NAND_INT, pilot_mtd);
++
++	/* unmap physical adress */
++	 dma_free_coherent(NULL, SZ_4K, (void*)scratch_dma_v_addr, scratch_dma_p_addr);
++	 iounmap((void *)pilot4_nand_base);
++	/* Free the MTD device structure */
++	kfree (pilot_mtd);
++}
++module_exit(pilot_cleanup);
++#endif
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Akshay <akshay.srinivas@emulex.com>");
++MODULE_DESCRIPTION("NAND controller driver for Pilot4");

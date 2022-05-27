@@ -1,0 +1,33 @@
+--- linux_org/drivers/net/phy/phy_device.c	2022-04-19 17:21:27.058772219 +0800
++++ linux/drivers/net/phy/phy_device.c	2022-04-19 17:23:27.260858198 +0800
+@@ -1864,22 +1864,26 @@
+ 	if (phydev->autoneg == AUTONEG_ENABLE && old_link && phydev->link)
+ 		return 0;
+ 
+-	phydev->speed = SPEED_UNKNOWN;
+-	phydev->duplex = DUPLEX_UNKNOWN;
+ 	phydev->pause = 0;
+ 	phydev->asym_pause = 0;
+ 
+ 	err = genphy_read_lpa(phydev);
+-	if (err < 0)
++	if (err < 0) {
++		phydev->speed = SPEED_UNKNOWN;
++		phydev->duplex = DUPLEX_UNKNOWN;
+ 		return err;
++	}
+ 
+ 	if (phydev->autoneg == AUTONEG_ENABLE && phydev->autoneg_complete) {
+ 		phy_resolve_aneg_linkmode(phydev);
+ 	} else if (phydev->autoneg == AUTONEG_DISABLE) {
+ 		int bmcr = phy_read(phydev, MII_BMCR);
+ 
+-		if (bmcr < 0)
++		if (bmcr < 0) {
++			phydev->speed = SPEED_UNKNOWN;
++			phydev->duplex = DUPLEX_UNKNOWN;
+ 			return bmcr;
++		}
+ 
+ 		if (bmcr & BMCR_FULLDPLX)
+ 			phydev->duplex = DUPLEX_FULL;

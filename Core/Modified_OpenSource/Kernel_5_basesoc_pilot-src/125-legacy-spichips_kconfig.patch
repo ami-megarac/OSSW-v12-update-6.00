@@ -1,0 +1,11 @@
+--- linux-5.4.99/drivers/mtd/Kconfig	2021-03-23 16:14:45.180385125 +0800
++++ linux/drivers/mtd/Kconfig	2021-03-23 15:57:50.520461710 +0800
+@@ -195,6 +195,8 @@
+ 
+ source "drivers/mtd/chips/Kconfig"
+ 
++source "drivers/mtd/spichips/Kconfig"
++
+ source "drivers/mtd/fmh/Kconfig"
+ 
+ source "drivers/mtd/maps/Kconfig"

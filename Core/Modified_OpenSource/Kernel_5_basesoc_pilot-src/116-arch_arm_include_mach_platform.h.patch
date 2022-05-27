@@ -1,0 +1,36 @@
+--- linux-5.4.99/arch/arm/include/mach/platform.h	2021-03-23 15:08:22.304943791 +0800
++++ linux/arch/arm/include/mach/platform.h	2021-03-19 17:18:45.323938500 +0800
+@@ -0,0 +1,33 @@
++/*
++ *  linux/arch/arm/include/asm/arch-se_pilot3/platform.h
++ *
++ *  This file contains the VERBENA SOC specific values
++ *
++ *  Copyright (C) 1999 ARM Limited.
++ *  Copyright (C) 2005 American Megatrends Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#ifndef PLATFORM_H
++#define PLATFORM_H
++#include <mach/hardware.h>
++
++#include <mach/hwmap.h>
++#include <mach/hwreg.h>
++#include <mach/hwdef.h>
++
++#endif
++

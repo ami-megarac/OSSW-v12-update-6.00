@@ -1,0 +1,14 @@
+--- linux/drivers/usb/core/devio.c	2021-02-17 17:35:20.000000000 +0800
++++ linux_new/drivers/usb/core/devio.c	2021-04-26 17:48:07.044010000 +0800
+@@ -1762,7 +1762,11 @@
+ 	u = (is_in ? URB_DIR_IN : URB_DIR_OUT);
+ 	if (uurb->flags & USBDEVFS_URB_ISO_ASAP)
+ 		u |= URB_ISO_ASAP;
++#if (0)	// Original kernel 5...
+ 	if (allow_short && uurb->flags & USBDEVFS_URB_SHORT_NOT_OK)
++#elif (1) // AMI code base...refer to SDK.
++	if (allow_short && uurb->flags & USBDEVFS_URB_SHORT_NOT_OK && is_in)
++#endif
+ 		u |= URB_SHORT_NOT_OK;
+ 	if (allow_zero && uurb->flags & USBDEVFS_URB_ZERO_PACKET)
+ 		u |= URB_ZERO_PACKET;

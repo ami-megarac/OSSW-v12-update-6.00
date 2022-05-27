@@ -1,0 +1,15 @@
+--- linux-5.4.99/include/uapi/linux/i2c-dev.h	2021-02-17 17:35:20.000000000 +0800
++++ linux/include/uapi/linux/i2c-dev.h	2021-03-23 15:14:43.561168314 +0800
+@@ -71,5 +71,12 @@
+ /* Originally defined with a typo, keep it for compatibility */
+ #define  I2C_RDRW_IOCTL_MAX_MSGS	I2C_RDWR_IOCTL_MAX_MSGS
+ 
++/* Extended IOCTLS - Implemented in i2c-core and hardware for Pilot */
++#define ENABLE_SSIF     0x0852
++#define I2C_SYS_RESET   0x0853
++#define I2C_SET_BB_TIMEOUT  0x0854  /* set bus busy timeout */
++#define I2C_DISABLE_SLAVE   0x0855  /* Disable I2C port Slave Interface */
++#define I2C_RECOV_CHECK_MS  0x0856  /* Set I2C bus recovery stuck signal check time (in milliseconds) */
++ 
+ 
+ #endif /* _UAPI_LINUX_I2C_DEV_H */

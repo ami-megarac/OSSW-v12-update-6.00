@@ -1,0 +1,2157 @@
+--- linux-5.4.99/drivers/mmc/host/pilot_sdhc.c	2021-03-23 14:31:59.776819792 +0800
++++ linux/drivers/mmc/host/pilot_sdhc.c	2021-03-19 17:18:44.987964600 +0800
+@@ -0,0 +1,2154 @@
++/******************************************************************************* 
++ *
++ * Copyright (C) 2004-2014 Emulex. All rights reserved. 
++ * EMULEX is a trademark of Emulex. 
++ * www.emulex.com
++ *  
++ * This program is free software; you can redistribute it and/or modify it under
++ * the terms of version 2 of the GNU General Public License as published by the
++ * Free Software Foundation. 
++ * This program is distributed in the hope that it will be useful. ALL EXPRESS
++ * OR IMPLIED CONDITIONS, REPRESENTATIONS AND WARRANTIES, INCLUDING ANY IMPLIED
++ * WARRANTY OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR 
++ * NON-INFRINGEMENT, ARE DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS 
++ * ARE HELD TO BE LEGALLY INVALID. See the GNU General Public License for more 
++ * details, a copy of which can be found in the file COPYING included 
++ * with this package.
++ *
++ ********************************************************************************/ 
++
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/init.h>
++#include <linux/ioport.h>
++#include <linux/platform_device.h>
++#include <linux/version.h>
++#include <linux/of_device.h>
++#include <linux/interrupt.h>
++#include <linux/dma-mapping.h>
++#include <linux/delay.h>
++#include <linux/pnp.h>
++#include <linux/highmem.h>
++#include <linux/mmc/host.h>
++#include <linux/mmc/core.h>
++#include <linux/mmc/card.h>
++#include <asm/io.h>
++#include <asm/dma.h>
++#include "pilot_sdhc.h"
++
++static const char Copyright[] = "Copyright � 2004-2014 Emulex. All rights reserved.";
++#define SE_SYS_CLK_VA_BASE	IO_ADDRESS(0x40100100)
++#define SE_USB_1_VA_BASE 	IO_ADDRESS(0x40800000)
++int is_reset_done=0;
++static int dma = 1;
++module_param(dma, int, S_IRUGO|S_IWUSR);
++
++static uint txdttmr_flg = 0;
++module_param(txdttmr_flg, uint, S_IRUGO|S_IWUSR);
++
++#define DRIVER_NAME 			"pilot4-sdhc0"
++#define DRIVER_VERSION 			"1.0"
++
++struct pilot_sdhc_host * pilot_sdhc[3];
++extern unsigned int IO_ADDRESS(unsigned int addr);
++static void pilot_sdhc_card_reinit(struct pilot_sdhc_host * host);
++static void pilot_sdhc_setCLKCTL(struct pilot_sdhc_host * host, u16 fsclk_divisor,
++		u8 sdclk_polarity, u8 sdclk_enable, u8 sdclk_select);
++static void pilot_sdhc_setupLMEMPageCFG (struct pilot_sdhc_host * host, u8 high_wm,
++		u8 low_wm, u16 max_num_pages, u8 page_size_dw);
++static void pilot_sdhc_enable_all_interrupts(struct pilot_sdhc_host * host);
++static void reset_sd_emmc(void);
++static void reset_sd_emmc()
++{
++	if(!is_reset_done)
++	{
++		unsigned int rerl=0;
++		unsigned int rerh=0;
++		/*Reset SDHC/EMMC Host controllers. This is needed incase they are used in u-boot
++		  Dont reset SDHC0/SDHC1 Host controllers if SSP claims them. check ssp dev lock bit*/
++		if( (*(volatile unsigned int *)(SE_USB_1_VA_BASE + 0x0718) & 0x1) != 0x1 )
++		{
++			printk("\n SSP claim\n");
++			rerl = (0x1 << 30);
++			rerh = 0x1;
++		}
++		rerh |= (0x1 << 5);
++		*(volatile unsigned int *)(SE_SYS_CLK_VA_BASE + 0x754) = rerl;
++		*(volatile unsigned int *)(SE_SYS_CLK_VA_BASE + 0x758) = rerh;
++		*(volatile unsigned int *)(SE_SYS_CLK_VA_BASE + 0x750) = 0xD01;
++		is_reset_done=1;
++	}
++}
++
++unsigned char pilot_sdhc_mmc_crc7 (char *data, unsigned char length)
++{
++	unsigned char i, ibit, c, crc;
++	crc = 0x00;		// Set initial value
++
++	for (i = 0; i < length; i++, data++)
++	{
++		c = *data;
++		//printf("0x%x,",c);
++
++		for (ibit = 0; ibit < 8; ibit++)
++		{
++			crc = crc << 1;
++			if ((c ^ crc) & 0x80) 
++				crc = crc ^ 0x09;	// ^ is XOR
++			c = c << 1;
++		}
++		crc = crc & 0x7F;
++	}
++
++	//printk("BEFORE SHIFT %x\n", crc);
++	c = ((crc<<1)|1);
++	//printk("AFTER SHIFT %x\n", c);
++	crc = c;
++
++	return crc;
++}
++
++static void pilot_sdhc_setCMDCTL (struct pilot_sdhc_host * host, u8 multiblock,
++		u8 dir, u8 autocmd12en, u8 mode, u8 cmdindex, u8 datapresent, 
++		u8 cmdindexcheck, u8 resptype, u8 crcchkenable)
++{
++	u32 tempData;
++	PILOT_SDHC_DEBUG("Entered %s \n", __FUNCTION__);
++	tempData = *((volatile u32*)(host->iobase + CMDCTL_REG));
++	//clear all the required fields
++	tempData &= (~(MODE));
++	tempData &= (~(AUTOCMD12EN));
++	tempData &= (~(DIRECTION));
++	tempData &= (~(MULTIBLOCK));
++	tempData &= (~(RESPTYPE));
++	tempData &= (~(CMDINDEXCHECK));
++	tempData &= (~(DATAPRESENT));
++	tempData &= (~(CMDINDEX));
++
++	//store all the required values
++	tempData |= ((datapresent & DATAPRESENT_BITS) << DATAPRESENT_POS);
++	tempData |= ((cmdindexcheck & CMDINDEXCHECK_BITS) << CMDINDEXCHECK_POS);
++	tempData |= ((resptype & RESPTYPE_BITS) << RESPTYPE_POS);
++	tempData |= ((multiblock & MULTIBLOCK_BITS) << MULTIBLOCK_POS);
++	tempData |= ((dir & DIRECTION_BITS) << DIRECTION_POS);
++	tempData |= ((autocmd12en & AUTOCMD12EN_BITS) << AUTOCMD12EN_POS);
++	tempData |= ((mode & MODE_BITS) << MODE_POS);
++
++	if (crcchkenable){
++		tempData |= CRCCHECKENABLE;
++	} else {
++		tempData &= ~CRCCHECKENABLE;
++	}
++
++	*((volatile u32*)(host->iobase + CMDCTL_REG)) = tempData;
++
++	PILOT_SDHC_DEBUG("1st Value written to CMDCTRL %x\n", tempData);
++
++	tempData = *((volatile u32*)(host->iobase + CMDCTL_REG));
++	//clear all the required fields
++	tempData &= (~(CMDINDEX));
++	//store all the required values
++	tempData |= ((cmdindex & CMDINDEX_BITS) << CMDINDEX_POS);
++	tempData |= ((CMDSET_BITS) << CMDSET_POS);
++
++	PILOT_SDHC_DEBUG("cidx=%d\n", ((tempData >> CMDINDEX_POS) & CMDINDEX_BITS));
++	PILOT_SDHC_DEBUG("Value written to CMDCTRL_REZG is %x\n", tempData);
++
++	*((volatile u32*)(host->iobase + CMDCTL_REG)) = tempData;
++#if 0
++
++	tempData = *((u32 *)(host->iobase + CMDCTL_REG));
++
++	if (((tempData >> CMDINDEX_POS) & CMDINDEX_BITS) != (cmdindex & CMDINDEX_BITS)) {
++		PILOT_SDHC_DEBUG("CMD INDEX CHECK FAILED\n");
++	}
++#endif
++
++}
++
++
++void pilot_sdhc_setCMDARG (struct pilot_sdhc_host * host, u32 cmdarg)
++{
++	PILOT_SDHC_DEBUG("setCMDARG 0x%x\n", cmdarg);
++	*((volatile u32*)(host->iobase + CMDARG_REG)) = cmdarg;
++}
++
++static void pilot_sdhc_card_reinit(struct pilot_sdhc_host * host)
++{
++	volatile u32 temp;
++	volatile int timeout = 1000000;
++	struct platform_device *pdev = (struct platform_device *)host->pdev;
++	struct device_node *np = pdev->dev.of_node;
++
++	/* Reset SDHC controller */
++	if(of_device_is_compatible(np, "pilot,sdhci-0"))
++	{
++		*(volatile unsigned int *)IO_ADDRESS(0x40100858) = 0;
++		*(volatile unsigned int *)IO_ADDRESS(0x40100854) = 1<<30;
++	}
++	if(of_device_is_compatible(np, "pilot,sdhci-1"))
++	{
++		*(volatile unsigned int *)IO_ADDRESS(0x40100858) = 1;
++		*(volatile unsigned int *)IO_ADDRESS(0x40100854) = 0;
++	}
++
++	*(volatile unsigned int *)IO_ADDRESS(0x40100850) = 0xD01;
++
++	mdelay(5);
++
++	do
++	{
++		temp = *(volatile unsigned int *)(host->iobase+ LMEMCTL_REG);
++		timeout--;
++		if(timeout <= 0) 
++		{
++			printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++			panic("");
++#endif
++			break;
++		}
++		udelay(1);
++
++	} while(temp != 0x3010000);
++
++	pilot_sdhc_setCLKCTL(host, PILOT_SDHC_CLK_400KHz, 0x0, 0x1, 0x01);
++
++	//increase the Ncr timer
++	*((volatile u32*)(host->iobase + RSPTMR_REG)) = 0xF0;
++
++	//set Tac
++	*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff;
++
++	//Change crc turnaround timer
++	*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1854232;
++
++	//Programn LMEM registers
++	pilot_sdhc_setupLMEMPageCFG (host, 0x2, 0x1, 0x4, 0x80);
++
++	pilot_sdhc_enable_all_interrupts(host);
++}
++
++static int pilot_sdhc_send_command(struct pilot_sdhc_host * host, struct mmc_command *cmd,
++		struct mmc_request * mrq)
++{
++	struct mmc_data *data = cmd->data;
++	u8 multiblock = 0; 
++	u8 dir = 0; 
++	u8 autocmd12en = 0; 
++	u8 mode = 0; 
++	u8 cmdindex = 0; 
++	u8 datapresent = 0;
++	u8 cmdindexcheck = 0; 
++	u8 resptype = 0; 
++	u8 crcchkenable = 0;
++	u8 resp_type = mmc_resp_type(cmd);
++	volatile u32 make_sure;
++	volatile int timeout = 1000000;
++
++	PILOT_SDHC_DEBUG("Entered %s \n", __FUNCTION__);
++	PILOT_SDHC_DEBUG("Flags is %x resp type is %x \n", cmd->flags, resp_type);
++	PILOT_SDHC_DEBUG("The command opcode is %x\n", cmd->opcode);
++	if(cmd->opcode == 51){
++		PILOT_SDHC_DEBUG("We got 51\n");
++	}
++
++	if(resp_type == MMC_RSP_NONE)
++	{
++		PILOT_SDHC_DEBUG("No Response for this command\n");
++		resptype = RESP_NONE;
++		cmdindex = cmd->opcode;
++#if 0
++		//Shailesh work around
++		if(cmd->opcode == 7){
++			cmdindex = cmd->opcode;
++			cmdindexcheck = 1;
++			resptype = RESP_48BIT;
++			crcchkenable = 1;
++		}
++		//End shailesh work around
++#endif
++	}
++	else if(resp_type == MMC_RSP_R1)
++	{
++		//MMC_RSP_R1      (MMC_RSP_PRESENT|MMC_RSP_CRC|MMC_RSP_OPCODE)
++		cmdindex = cmd->opcode;
++		cmdindexcheck = 1;
++		resptype = RESP_48BIT;
++		crcchkenable = 1;
++	}
++	else if(resp_type == MMC_RSP_R1B)
++	{
++		//#define MMC_RSP_R1B     (MMC_RSP_PRESENT|MMC_RSP_CRC|MMC_RSP_OPCODE|MMC_RSP_BUSY)
++		cmdindex = cmd->opcode;
++		cmdindexcheck = 1;
++		resptype = RESP_48BIT_BUSY;
++		crcchkenable = 1;
++	}
++	else if(resp_type == MMC_RSP_R2)
++	{
++		//#define MMC_RSP_R2      (MMC_RSP_PRESENT|MMC_RSP_136|MMC_RSP_CRC)
++		cmdindex = cmd->opcode;
++		cmdindexcheck = 0;
++		resptype = RESP_136BIT;
++		crcchkenable = 0;
++		//crcchkenable = 1; //TODO - Shailesh check this
++	}
++	else if(resp_type == MMC_RSP_R3)
++	{
++		//#define MMC_RSP_R3      (MMC_RSP_PRESENT)
++		cmdindex = cmd->opcode;
++		cmdindexcheck = 0;
++		resptype = RESP_48BIT;
++		crcchkenable = 0;
++	}
++#if 0
++	/* MMC response R1,R5, R6 and R7 are same. Hence this code will be deadcode */
++	else if(resp_type == MMC_RSP_R6)
++	{
++		//#define MMC_RSP_R6	(MMC_RSP_PRESENT|MMC_RSP_CRC) 
++		cmdindex = cmd->opcode;
++		cmdindexcheck = 0;
++		resptype = RESP_48BIT;
++		crcchkenable = 1;
++	}
++	else if(resp_type == MMC_RSP_R7)//Added for SDHC
++	{ 	
++		//(MMC_RSP_PRESENT|MMC_RSP_CRC|MMC_RSP_OPCODE|MMC_RSP_IF_COND)
++		cmdindex = cmd->opcode;
++		cmdindexcheck = 0;
++		resptype = RESP_48BIT;
++		crcchkenable = 1;
++	}
++#endif
++	else
++	{
++		PILOT_SDHC_DEBUG("Unknown Response type\n");
++	}
++	host->expected_irqs = 0;
++	host->expected_irqs = EXPECT_CMD_INTR; 
++
++	if(data)
++	{
++		if(dma)
++		{
++			mode = 1; //dma_mode
++		}
++		else
++		{
++			mode = 0; //pio_mode
++			host->expected_irqs |=EXPECT_NO_INTR_PIO;
++		}
++		host->expected_irqs |= EXPECT_DATA_INTR;
++		datapresent = 1; //Data is present
++		//if(data->flags & MMC_DATA_MULTI)
++		if(data->blocks > 1)
++		{
++			autocmd12en = 1;
++			multiblock = 1;
++			host->expected_irqs |= EXPECT_AUTOCMD12_INTR;
++		}
++
++		if(data->flags & MMC_DATA_READ){
++			dir = 1;
++		}
++		else
++		{
++			dir = 0;
++			host->timer.expires = jiffies + host->timer_val;
++			host->timed_out = 0;
++			host->timer_added = 1;
++			//add_timer(&host->timer);
++		}
++
++		if(host->bus_width == MMC_BUS_WIDTH_8)
++		{
++			PILOT_SDHC_DEBUG("Setting Bus width to 8\n");
++			*((volatile u32 *) (host->iobase + SDHCCTL_REG)) = 0x04;
++		}
++		else if(host->bus_width == MMC_BUS_WIDTH_4){
++			PILOT_SDHC_DEBUG("Setting Bus width to 4\n");
++			*((volatile u32 *) (host->iobase + SDHCCTL_REG)) = 0x2;
++		}
++		else
++		{
++			PILOT_SDHC_DEBUG("Setting Bus width to 1\n");
++			//*((volatile u32 *) (host->iobase + SDHCCTL_REG)) &= ~(0x00000002);
++			*((volatile u32 *) (host->iobase +  SDHCCTL_REG)) = 0x00;
++		}
++	}
++
++	if(host->flags == HOST_F_STOP)
++	{
++		host->cmd->error = -ETIMEDOUT;
++		host->data = NULL;
++		host->expected_irqs = 0;
++
++		pilot_sdhc_card_reinit(host);
++
++		tasklet_schedule(&host->finish_task);
++		return -1;
++	}
++
++	//Send the command to the hardware
++	pilot_sdhc_setCMDARG(host, cmd->arg);
++	//Change as per shaileshs mail dated 29th June 2009 to fix bug 5149
++	do{
++		make_sure = *((volatile u32 *) (host->iobase + PRSNTST_REG));
++		timeout--;
++		if(timeout <= 0) 
++		{
++			printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++			panic("");
++#endif
++			break;
++		}
++		udelay(1);
++
++	}while((make_sure & 0x00F00000) != 0x00F00000);
++	//End Change as per shaileshs mail dated 29th June 2009 to fix bug 5149
++	pilot_sdhc_setCMDCTL (host, multiblock, dir, autocmd12en, mode, cmdindex, datapresent, cmdindexcheck, resptype, crcchkenable);
++
++#if 0
++	if(resp_type == MMC_RSP_NONE)
++	{
++		host->cmd = NULL; // dont worry cmd pointer is in host->mrq
++		host->data = NULL;
++		mrq = host->mrq;
++		host->mrq = NULL;
++		//spin_unlock(&host->lock);
++		mmc_request_done(host->mmc, mrq);
++		//spin_lock(&host->lock);
++	}
++#endif
++	return 0;
++} 
++
++void pilot_sdhc_setBLKCTL (struct pilot_sdhc_host * host, u16 blkcnt, u16 blksize)
++{
++	u32 tempData;
++
++	blkcnt &= 0x1ff;
++	blksize &=0xfff;
++	tempData = *((volatile u32*)(host->iobase+ BLKCTL_REG));
++	//clear all the required fields
++	tempData &= (~(BLKLEN));
++	tempData &= (~(BLKCNT));
++
++	//store all the required values
++	tempData |= ((blksize & BLKLEN_BITS) << BLKLEN_POS);
++	tempData |= ((blkcnt & BLKCNT_BITS) << BLKCNT_POS);
++
++	//printk("The value wrote to BLK ctl reg is %x\n", tempData);
++
++	*((volatile u32*)(host->iobase+ BLKCTL_REG)) = tempData;
++}
++
++
++static void pilot_sdhc_tasklet_finish (unsigned long param);
++
++/*
++static void pilot_sdhc_access_timer_event(unsigned long arg)
++{
++	struct pilot_sdhc_host * host = (struct pilot_sdhc_host *) arg;
++	PILOT_SDHC_DEBUG("Entered %s\n", __FUNCTION__);
++	//printk("Timeout time %x\n", jiffies);
++	if(host->cmd == NULL)
++		return;
++	host->cmd->error = -ETIMEDOUT;
++	host->timed_out = 1;
++	pilot_sdhc_tasklet_finish((unsigned long)host);
++}
++*/
++
++static int pilot_sdhc_prepare_data(struct pilot_sdhc_host * host, struct mmc_data *data)
++{
++//	int datalen = data->blocks * (1 << data->blksz_bits);
++//	int datalen = data->blocks * (data->blksz);
++
++//	printk("Blk is %d  sg_len is %d\n", data->blocks, data->sg_len);
++
++	int i;
++//	void *dma_virt_addr;
++	u32 dma_phys_addr;
++	unsigned long timer_val=250;
++	struct scatterlist *sg = &data->sg[0];
++
++	if (data->flags & MMC_DATA_READ)
++	{
++		PILOT_SDHC_DEBUG("Data READ\n");
++		host->dma.dir = DMA_FROM_DEVICE;
++		//host->dma.dir = DMA_BIDIRECTIONAL;
++	}
++	else
++	{
++		PILOT_SDHC_DEBUG("Data WRITE\n");
++		host->dma.dir = DMA_TO_DEVICE;
++		//host->dma.dir = DMA_BIDIRECTIONAL;
++	}
++
++	host->dma.len = dma_map_sg(mmc_dev(host->mmc), data->sg,
++			data->sg_len, host->dma.dir);
++
++	if (host->dma.len == 0)
++		return -ETIMEDOUT;
++
++	//dma_sync_sg_for_cpu(mmc_dev(host->mmc), host->data->sg, host->data->sg_len, host->dma.dir);
++
++	PILOT_SDHC_DEBUG("nanos time and clock value is %d and %d\n", data->timeout_ns,  data->timeout_clks); 
++	//*((u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff; //Earlier we were hardcoding a large value
++
++
++	if(data->timeout_ns == 0)	//May be a sdhc card
++	{ 
++		if(data->flags & MMC_DATA_READ)
++		{
++			timer_val = 100*1000*1000;
++			*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = timer_val;
++		}
++		else
++		{
++			timer_val = 250; //For write we track it using a software timer whose
++			//value is programmed in millsecs and according to the spec
++			//for writes the TAAC shoudl be 250ms fixed value
++			host->timer_val = msecs_to_jiffies(timer_val);
++		}
++	}
++	else
++	{
++		if(data->flags & MMC_DATA_WRITE)
++		{
++			timer_val = (usecs_to_jiffies(data->timeout_ns/1000));
++			timer_val *= data->blocks;
++			host->timer_val = timer_val;
++		}
++		else
++		{
++			switch (host->clock)
++			{
++				case PILOT_SDHC_CLK_50MHz:
++					//DIV factor is 20 ns
++					timer_val = (data->timeout_ns/20);
++					break;
++				case PILOT_SDHC_CLK_25MHz: 
++				case PILOT_SDHC_CLK_20MHz:
++					//DIV factor is 40 ns
++					timer_val = (data->timeout_ns/40);
++					break;
++				case PILOT_SDHC_CLK_400KHz:
++					//DIV factor is 2500 ns
++					timer_val = (data->timeout_ns/2500);
++					break;
++				default:
++					printk("Unknown clock not programming RXDTTMR register\n");
++					break;
++			}
++			*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = timer_val;
++		}
++	}
++	PILOT_SDHC_DEBUG("The access time programmed is %d \n", timer_val);
++
++	PILOT_SDHC_DEBUG("The number of data blocks is %d and Block bits is %d in bite is %d\n", data->blocks, (data->blksz), data->blksz);
++
++	PILOT_SDHC_DEBUG("Number of scatter gather list is %d\n", host->dma.len);
++
++
++	PILOT_SDHC_DEBUG("Length of the scatter gather bytes is %d\n", sg->length);
++	dma_phys_addr = sg_dma_address(sg);//virt_to_phys(dma_virt_addr);
++	//pilot_sdhc_setBLKCTL (host, data->blocks, (1 << data->blksz_bits)); 
++	//PILOT_SDHC_DEBUG("host->dma.len is %d, sg->length is %d\n", host->dma.len, sg->length);
++
++	if(dma)
++	{
++		if(host->dma.len > 64){
++			PILOT_SDHC_DEBUG("ALARM!!!WARNING list greater than 64 %d \n", host->dma.len);
++		}
++
++		if (!(data->flags & MMC_DATA_READ))
++		{
++			int i;
++			for(i=0; i<host->dma.len; i++)
++			{
++				struct scatterlist *sg = &data->sg[i];
++				host->gstruc->data_addr = sg_dma_address(sg);
++				if((host->gstruc->data_addr & 0xFF) != 0x00)
++				{
++					PILOT_SDHC_DEBUG("Warning!! Write Address is not 256 byte alligned for SD dmalen %d data_addr %x\n", host->dma.len, host->gstruc->data_addr);
++				}
++
++				host->gstruc->len = sg->length-1;
++				host->gstruc->crc_en = 0;
++				host->gstruc->dir = 1;
++				host->gstruc->chain = 1;
++				host->gstruc->int_enb = 0;
++				host->gstruc++;
++			}
++			host->gstruc--;
++			host->gstruc->chain=0;
++			*((volatile u32 *) (host->iobase + SDMAADDR_REG)) = host->dma_addr;   //Trigger DMA
++			host->gstruc = host->astru;
++		}
++
++		if ((host->data->flags & MMC_DATA_READ))
++		{
++			for(i = 0; i< host->dma.len; i++)
++			{
++				struct scatterlist *sg = &host->data->sg[i];
++				host->gstruc->data_addr = sg_dma_address(sg);
++				if((host->gstruc->data_addr & 0xFF) != 0x00)
++				{
++					PILOT_SDHC_DEBUG("Warning!! Read Address is not 256 byte alligned for SD dmalen %d data_addr %x\n", host->dma.len, host->gstruc->data_addr);
++				}
++				PILOT_SDHC_DEBUG("gstruc->data_addr for data is %x\n", host->gstruc->data_addr);
++				host->gstruc->len = sg->length-1;
++				host->gstruc->dir = 0;
++				host->gstruc->crc_en = 0;
++				host->gstruc->int_enb = 0;
++				host->gstruc->chain = 1;
++				host->gstruc++;
++			}
++			host->gstruc--;
++			host->gstruc->chain=0;
++			*((volatile u32 *) (host->iobase + SDMAADDR_REG)) = host->dma_addr;  //Trigger DMA
++			host->gstruc = host->astru;
++		}
++		pilot_sdhc_setBLKCTL (host, data->blocks, (data->blksz));
++	}
++	else
++	{
++		pilot_sdhc_setBLKCTL (host, data->blocks, (data->blksz));
++		PILOT_SDHC_DEBUG("The Physical address for data is %x\n", dma_phys_addr);
++	}
++	return 0;
++}
++
++static void pilot_sdhc_LoadPIODataTask (struct pilot_sdhc_host * host, u16 blklen,
++		u32 hostAddr, u32 LMEMAddr)
++{
++	u16 tmp_blklen;
++	u16 tmp_blklen_cnt;
++	u32 hostData;
++	u8 hostDataByte;
++	u32 tempAddr;
++	u32 tempData;
++	u32 LMEMFullAddr;
++
++	tempData = ((host->lmem_p) & (0x00000fff));
++	LMEMFullAddr = (u32)(host->lmem_v + (LMEMAddr - tempData));
++
++	//Dwords
++	tmp_blklen = (blklen >> 2);
++	tmp_blklen_cnt = 0;
++	PILOT_SDHC_DEBUG("blklen is %x\n", blklen);
++	while (tmp_blklen_cnt < tmp_blklen) 
++	{
++		PILOT_SDHC_DEBUG("tmp_blklen_cnt is %x\n", tmp_blklen_cnt);
++		PILOT_SDHC_DEBUG("tmp_blklen is %x\n", tmp_blklen);
++
++		tempAddr = (LMEMFullAddr + (tmp_blklen_cnt << 2) );
++		PILOT_SDHC_DEBUG("LmemAddr is %x\n", tempAddr);
++		tempAddr = (hostAddr + (tmp_blklen_cnt << 2));
++		PILOT_SDHC_DEBUG("hostAddr is %x\n", tempAddr);
++		hostData = 0;
++		hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0));
++		hostData |= (hostDataByte << 0);
++		hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 1));
++		hostData |= (hostDataByte << 8);
++		hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 2));
++		hostData |= (hostDataByte << 16);
++		hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 3));
++		hostData |= (hostDataByte << 24);
++//		hostData = *((u32*)(hostAddr + (tmp_blklen_cnt << 2)));
++		PILOT_SDHC_DEBUG("LmemData is %x\n", hostData);
++
++		*((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2))) = hostData;
++		tmp_blklen_cnt += 1;
++//		tmp_blklen_cnt += sizeof(u32);
++	}
++	if ((blklen & 0x3)) 
++	{
++
++		tempAddr = (LMEMFullAddr + (tmp_blklen_cnt << 2));
++		tempAddr = (hostAddr + (tmp_blklen_cnt << 2));
++
++		hostData = 0;
++		switch((blklen & 0x3))
++		{
++			case 1:
++				hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0));
++				hostData |= (hostDataByte << 0);
++				*((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2))) = hostData;
++				break;
++			case 2:
++				hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0));
++				hostData |= (hostDataByte << 0);
++				hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 1));
++				hostData |= (hostDataByte << 8);
++				*((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2))) = hostData;
++				break;
++			case 3:
++				hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0));
++				hostData |= (hostDataByte << 0);
++				hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 1));
++				hostData |= (hostDataByte << 8);
++				hostDataByte = *((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 2));
++				hostData |= (hostDataByte << 16);
++				*((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2))) = hostData;
++				break;
++			default:
++				PILOT_SDHC_DEBUG("Can't reach here in  LoadPIODataTask\n");
++				break;
++		}
++	}
++}
++
++static u16 pilot_sdhc_checkLMEMPGAvailable(struct pilot_sdhc_host * host)
++{
++	volatile u32 tempData; 
++	volatile int timeout = 1000000;
++
++	tempData = LMEM_ALL_PAGES_ALLOCATED;
++	/*
++	   TODO - Here have a if condition to check the LMEMSTATUS_REG if no pages present
++	   Wait for WRITE_BUF_READY interrupt
++	*/
++	while ((tempData & LMEM_ALL_PAGES_ALLOCATED) != 0x00000000) 
++	{
++		tempData = *((volatile u32*)(host->iobase+ LMEMSTATUS_REG));
++		PILOT_SDHC_DEBUG("While TempData = %x\n", tempData);
++		timeout--;
++		if(timeout <= 0) 
++		{
++			printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++			panic("");
++#endif
++			break;
++		}
++		udelay(1);
++
++	}
++
++	tempData = *((volatile u32*)(host->iobase+ LMEMADDR_REG));
++
++	tempData &= LMEM_FREE_PTR;
++	tempData = tempData >> LMEM_FREE_PTR_POS;
++	return(tempData & LMEM_FREE_PTR_BITS);
++}
++
++static u16 pilot_sdhc_getLMEMBaseAddr (void) 
++{
++	return(0x400);
++}
++
++static u8 pilot_sdhc_getLMEMPGSize (struct pilot_sdhc_host * host) 
++{
++	volatile u32 tempData;
++
++	tempData = *((volatile u32*)(host->iobase+ LMEMCFG_REG));
++	tempData &= LMEM_PAGE_SIZE_DWORDS;
++	tempData = tempData >> LMEM_PAGE_SIZE_DWORDS_POS;
++
++	return(tempData & LMEM_PAGE_SIZE_DWORDS_BITS);
++}
++
++static u16 pilot_sdhc_getLMEMLimitAddr (void) 
++{
++	return(0xBFF);
++}
++
++static u8 pilot_sdhc_checkRxDtRdy (struct pilot_sdhc_host * host) 
++{
++	volatile u32 tempData;
++	volatile u32 readData;
++	volatile u32 vldEmpty;
++	volatile int timeout = 1000000;
++
++	tempData  =  *((volatile u32*)(host->iobase + PRSNTST_REG));
++	readData  = *((volatile u32*)(host->iobase+ LTXSTS_REG));
++	vldEmpty  = ((readData & LMEM_PG_VALID_EMPTY) >> LMEM_PG_VALID_EMPTY_POS);
++
++	//Here first check if the "Write transfer bit" is set in the PRSNTST_REG 
++	//and also see if the VALID_EMPTY is set in LTXSTS_REG
++	while (((tempData & 0x00000800) != 0x00000800) && (vldEmpty == 1))
++	{
++		tempData  = *(volatile u32*)(host->iobase + PRSNTST_REG);
++		readData  = *(volatile u32*)(host->iobase + LTXSTS_REG);
++		vldEmpty  = ((readData & LMEM_PG_VALID_EMPTY) >> LMEM_PG_VALID_EMPTY_POS);
++		timeout--;
++		if(timeout <= 0) 
++		{
++			printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++			panic("");
++#endif
++			break;
++		}
++		udelay(1);
++
++	}
++
++	//printk("pilot_sdhc_checkRxDtRdy returning\n");
++	return(0);
++}
++
++static u16 pilot_sdhc_getLMEMPGValidCnt (struct pilot_sdhc_host * host)
++{
++	u32 tempData;
++	tempData = *((volatile u32*)(host->iobase+ LMEMCNT_REG));
++	tempData &= LMEM_VALID_DATA_PAGES_CNT;
++	tempData = tempData >> LMEM_VALID_DATA_PAGES_CNT_POS;
++	return(tempData & LMEM_VALID_DATA_PAGES_CNT_BITS);
++}
++
++static u16 pilot_sdhc_getLMEMPGCompletionPtr (struct pilot_sdhc_host * host)
++{
++	u32 tempData;
++	tempData = *((volatile u32*)(host->iobase+ LMEMSTATUS_REG));
++	tempData &= LMEM_COMPLETION_PTR;
++	tempData = tempData >> LMEM_COMPLETION_PTR_POS;
++	return(tempData & LMEM_COMPLETION_PTR_BITS);
++}
++
++static void pilot_sdhc_StorePIODataTask (struct pilot_sdhc_host * host, u16 blklen,
++		u32 hostAddr, u16 LMEMAddr)
++{
++	volatile u16 tmp_blklen;
++	volatile u16 tmp_blklen_cnt;
++	volatile u32 tempData;
++	volatile u32 hostData;
++//	volatile u32 tempAddr;
++	volatile u32 LMEMFullAddr;
++
++	tempData = ((host->lmem_p) & (0x00000fff));
++	//LMEMFullAddr = (host->lmem_v + tempData + LMEMAddr);
++	LMEMFullAddr = (u32)((host->lmem_v + (LMEMAddr - tempData)));
++	PILOT_SDHC_DEBUG("Phy addr %x Virtual addr %x offset is %x\n", host->lmem_p, host->lmem_v, LMEMAddr);
++
++	//Dwords
++	tmp_blklen = (blklen >> 2);
++	tmp_blklen_cnt = 0;
++	while (tmp_blklen_cnt < tmp_blklen)
++	{
++		//tempAddr = (hostAddr + (tmp_blklen_cnt << 2));
++		//tempAddr = (LMEMFullAddr + (tmp_blklen_cnt << 2));
++		hostData = *((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2)));
++		PILOT_SDHC_DEBUG("DATA is %x\n", hostData);
++
++		*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0)) = (hostData & (0xff));
++		hostData = (hostData >> 8);
++		*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 1)) = (hostData & (0xff));
++		hostData = (hostData >> 8);
++		*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 2)) = (hostData & (0xff));
++		hostData = (hostData >> 8);
++		*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 3)) = (hostData & (0xff));
++		hostData = (hostData >> 8);
++		tmp_blklen_cnt += 1;
++	}
++	if ((blklen & 0x3))
++	{
++		//tempAddr = (hostAddr + (tmp_blklen_cnt << 2));
++		//tempAddr = (LMEMFullAddr + (tmp_blklen_cnt << 2));
++
++		switch((blklen & 0x3))
++		{
++			case 1:
++				hostData = *((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2)));
++				hostData &= 0xff;
++
++				*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0)) = (hostData & (0xff));
++				hostData = (hostData >> 8);
++				break;
++			case 2:
++				hostData = *((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2)));
++				hostData &= 0xffff;
++
++				*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0)) = (hostData & (0xff));
++				hostData = (hostData >> 8);
++				*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 1)) = (hostData & (0xff));
++				hostData = (hostData >> 8);
++				break;
++			case 3:
++				hostData = *((volatile u32*)(LMEMFullAddr + (tmp_blklen_cnt << 2)));
++				hostData &= 0xffffff;
++
++				*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 0)) = (hostData & (0xff));
++				hostData = (hostData >> 8);
++				*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 1)) = (hostData & (0xff));
++				hostData = (hostData >> 8);
++				*((volatile u8*)(hostAddr + (tmp_blklen_cnt << 2) + 2)) = (hostData & (0xff));
++				hostData = (hostData >> 8);
++				break;
++			default:
++				break;
++		}
++	}
++}
++
++static void pilot_sdhc_clearRxDtRdy (struct pilot_sdhc_host * host)
++{
++	u32 tempData;
++
++	tempData = *((volatile u32*)(host->iobase + PRSNTST_REG));
++	tempData = tempData | ((0x1) << 11);
++	*((volatile u32*)(host->iobase + PRSNTST_REG)) = tempData;
++}
++
++
++static int pilot_sdhc_do_pio_read(struct pilot_sdhc_host * host)
++{
++	u32 i;
++	u16 tmp_blkcnt;
++	u32 hostmemAddr;
++	u16 LMEMPGValidCnt;
++	u16 LMEMCompPtr;
++	u16 tmp_LMEMPGValidCnt;
++	u16 rollover_LMEMPGValidCnt;
++	u16 LMEMBaseAddr;
++	u16 LMEMLimitAddr;
++	u16 LMEMAddr;
++	u8 LMEMPGSize;
++	u16 new_blkcnt;
++	u16 new_blklen;
++	u8  rxDtResult;
++	u32 starthostmemAddr;
++
++	struct scatterlist *sg = &host->data->sg[0];
++	u16 blkcnt = host->data->blocks;
++	//u16 blklen = (1 << host->data->blksz_bits);
++	u16 blklen = host->data->blksz;
++
++#if 0 //supports for 512 bytes block support
++	if ((blkcnt & 0x1ff) == 0) {
++		new_blkcnt = 0x200;
++	} else {
++		new_blkcnt = (blkcnt & 0x1ff);
++	}
++
++	if ((blklen & 0x1ff) == 0) {
++		new_blklen = 0x200;
++	} else {
++		new_blklen = (blklen & 0x1ff);
++	}
++#else //supports for 4K bytes block support
++	if ((blkcnt & 0x1ff) == 0) {
++		new_blkcnt = 0x200;
++	} else {
++		new_blkcnt = (blkcnt & 0x1ff);
++	}
++
++	if ((blklen & 0xfff) == 0) {
++		new_blklen = 0x1000;
++	} else {
++		new_blklen = (blklen & 0xfff);
++	}
++
++#endif
++	//hostmemAddr = page_address(sg->page) + sg->offset;
++	hostmemAddr = (u32)(page_address(sg_page(sg)) + sg->offset);
++	starthostmemAddr = hostmemAddr;
++	tmp_blkcnt = 0;
++#if 0
++	u32 dma_phys_addr = sg_dma_address(sg);
++
++	hostmemAddr = (u32) ioremap_nocache(dma_phys_addr, sg->length);
++//	unsigned long flags;
++//	local_irq_save(flags);
++//	hostmemAddr = kmap_atomic(sg_page(sg)) + sg->offset;
++#endif
++	LMEMBaseAddr = pilot_sdhc_getLMEMBaseAddr();
++	LMEMLimitAddr = pilot_sdhc_getLMEMLimitAddr();
++	LMEMPGSize = pilot_sdhc_getLMEMPGSize(host);
++
++	while (tmp_blkcnt < new_blkcnt) 
++	{
++		rollover_LMEMPGValidCnt = 0;
++		PILOT_SDHC_DEBUG("Block Count is %d\n", tmp_blkcnt);
++		//Check Rx Data Ready
++		rxDtResult = pilot_sdhc_checkRxDtRdy(host);
++		if (rxDtResult != 0)
++		{
++			PILOT_SDHC_DEBUG("Pio data read fail \n");
++			return -1;
++		}
++		LMEMPGValidCnt = pilot_sdhc_getLMEMPGValidCnt(host);
++		if(LMEMPGValidCnt == 0)
++		{
++			printk("In %s RxDtis ready but count is ZERO\n", __FUNCTION__);
++		}
++		LMEMCompPtr = pilot_sdhc_getLMEMPGCompletionPtr(host);
++		tmp_LMEMPGValidCnt = 0;
++		while (tmp_LMEMPGValidCnt < LMEMPGValidCnt)
++		{
++			if (rollover_LMEMPGValidCnt == 0)
++			{
++				if ((LMEMBaseAddr + ((LMEMCompPtr + (tmp_LMEMPGValidCnt * LMEMPGSize)) << 2)) > LMEMLimitAddr) {
++					rollover_LMEMPGValidCnt = tmp_LMEMPGValidCnt;
++					LMEMAddr = LMEMBaseAddr;
++				}
++				else
++				{
++					LMEMAddr = LMEMBaseAddr + ((LMEMCompPtr + (tmp_LMEMPGValidCnt * LMEMPGSize)) << 2);
++				}
++			}
++			else
++			{
++				if ((LMEMBaseAddr + (((tmp_LMEMPGValidCnt - rollover_LMEMPGValidCnt) * LMEMPGSize) << 2)) > LMEMLimitAddr){
++					rollover_LMEMPGValidCnt = tmp_LMEMPGValidCnt;
++					LMEMAddr = LMEMBaseAddr;
++				}
++				else
++				{
++					LMEMAddr = LMEMBaseAddr + (((tmp_LMEMPGValidCnt - rollover_LMEMPGValidCnt) * LMEMPGSize) << 2);
++				}
++			}
++
++			PILOT_SDHC_DEBUG("Before StorePIO\n");
++
++			pilot_sdhc_StorePIODataTask(host, new_blklen, hostmemAddr, LMEMAddr);
++
++			PILOT_SDHC_DEBUG("New Block Length is %d\n", new_blklen);
++			PILOT_SDHC_DEBUG("LMEMaddr = %x \n", LMEMAddr);
++			PILOT_SDHC_DEBUG("hostmemaddr = %x \n", hostmemAddr);
++			PILOT_SDHC_DEBUG("host opcode = %x \n", host->cmd->opcode);
++			for(i=0;i<new_blklen/4; i++){
++				PILOT_SDHC_DEBUG("data = %x \n",( *(volatile u32 *)(hostmemAddr + (i*4))));
++			}
++			PILOT_SDHC_DEBUG("After StorePIO\n");
++
++			hostmemAddr += new_blklen;
++			tmp_LMEMPGValidCnt = tmp_LMEMPGValidCnt + 1;
++			tmp_blkcnt = tmp_blkcnt + 1;
++			pilot_sdhc_clearRxDtRdy(host);
++			//printk("After clearRxDtRdy\n");
++		} // while (tmp_LMEMPGValidCnt < LMEMPGValidCnt
++		//printk("c");
++	}
++	tmp_blkcnt = 0;
++	/*
++	   while(host->expected_irqs != 0xFFFFFFF0){
++	   printk("SR");
++	   tmp_blkcnt++;
++	   if(tmp_blkcnt > 200000){
++	   printk("Bailing out PIO Read forcefully\n");
++	   break;
++	   }
++
++	   }
++	   tasklet_schedule(&host->finish_task);
++	   */
++	//pilot_sdhc_tasklet_finish((unsigned long)host);
++	//printk("\n");
++	//dma_sync_sg_for_cpu(mmc_dev(host->mmc), host->data->sg, host->data->sg_len, host->dma.dir);
++
++#if 0
++	kunmap_atomic(hostmemAddr);
++	local_irq_restore(flags);
++	iounmap(hostmemAddr);	
++#endif
++	__cpuc_flush_dcache_area((void *)starthostmemAddr,  (new_blklen * new_blkcnt));
++	return 0;
++}
++
++static void pilot_sdhc_setTxDtRdy (struct pilot_sdhc_host * host) 
++{
++	volatile u32 tempData;
++
++	tempData = *((volatile u32*)(host->iobase+ PRSNTST_REG));
++	tempData = tempData | ((0x1) << 10);
++	*((volatile u32*)(host->iobase+ PRSNTST_REG)) = tempData;
++}
++
++
++static int pilot_sdhc_do_pio_write(struct pilot_sdhc_host * host)
++{
++	u16 new_blkcnt = host->data->blocks;
++	//u16 new_blklen = (1 << host->data->blksz_bits);
++	u16 new_blklen = host->data->blksz;
++	unsigned char * sg_ptr;
++	struct scatterlist *sg = &host->data->sg[0];
++	u16 AllocIndex;
++	u16 tmp_blkcnt=0;
++	u16 LMEMAddr;
++	u16 LMEMBaseAddr;
++	u8  LMEMPGSize;
++	u32 sg_len;
++#if 0 //supports 512 bytes block in hardware
++	if ((new_blkcnt & 0x1ff) == 0) {
++		new_blkcnt = 0x200;
++	} else {
++		new_blkcnt &= 0x1ff;
++	}
++
++	if ((new_blklen & 0x1ff) == 0) {
++		new_blklen = 0x200;
++	} else {
++		new_blklen &= 0x1ff; 
++	}
++#else //supports 4K blocks in the hardware
++	if ((new_blkcnt & 0x1ff) == 0) {
++		new_blkcnt = 0x200;
++	} else {
++		new_blkcnt &= 0x1ff;
++	}
++
++	if ((new_blklen & 0xfff) == 0) {
++		new_blklen = 0x1000;
++	} else {
++		new_blklen &= 0xfff;
++	}
++#endif
++	//sg_ptr = page_address(sg->page) + sg->offset;
++	sg_ptr = page_address(sg_page(sg)) + sg->offset;
++	sg_len = sg_dma_len(sg);
++	tmp_blkcnt = 0;
++	LMEMBaseAddr = pilot_sdhc_getLMEMBaseAddr();
++	LMEMPGSize = pilot_sdhc_getLMEMPGSize(host);
++
++	while (tmp_blkcnt < new_blkcnt) {
++		AllocIndex = pilot_sdhc_checkLMEMPGAvailable(host);
++		LMEMAddr = (LMEMBaseAddr + (AllocIndex << 2));
++
++		//SetupPIOData
++		PILOT_SDHC_DEBUG("Before LoadPIO\n");
++		pilot_sdhc_LoadPIODataTask(host, new_blklen, (u32)sg_ptr, LMEMAddr);
++		PILOT_SDHC_DEBUG("After LoadPIO\n");
++
++		//Set Tx Data Ready
++		pilot_sdhc_setTxDtRdy(host);
++		sg_ptr += new_blklen;
++		tmp_blkcnt = tmp_blkcnt + 1;
++	}
++	tmp_blkcnt = 0;
++	/*
++	   while(host->expected_irqs != 0xFFFFFFF0){
++	//printk("SW");
++	mdelay(20);
++	tmp_blkcnt++;
++	if(tmp_blkcnt > 200000){
++	printk("Bailing out PIO Write forcefully\n");
++	break;
++	}
++
++	}
++	tasklet_schedule(&host->finish_task);
++	*/
++	//pilot_sdhc_tasklet_finish((unsigned long)host);
++	return 0;
++}
++
++
++/*
++   This function actually starts command or data transaction
++   */
++static void pilot_sdhc_request(struct mmc_host* mmc, struct mmc_request* mrq)
++{
++	unsigned long flags;
++	struct pilot_sdhc_host * host = mmc_priv(mmc);
++	u32 int_status = 0;
++	PILOT_SDHC_DEBUG("Entered %s \n", __FUNCTION__);
++	host->mrq = mrq;
++	host->cmd = mrq->cmd;
++	host->data = mrq->data;
++	host->stop = mrq->stop;
++#if 0
++	//TODO - Check if card is present
++	if(host->flags == HOST_F_STOP)
++	{
++		PILOT_SDHC_DEBUG("Received command when card is removed\n");
++		host->cmd->error = -ETIMEDOUT;
++		host->data = NULL;
++		tasklet_schedule(&host->finish_task);
++		return;
++	}
++#endif
++	//TODO- Check if previous command is in progress
++
++	if(host->mrq->data)
++	{
++/*
++		if (host->data->flags & MMC_DATA_STREAM)
++		{
++			PILOT_SDHC_DEBUG("Stream commands not supported\n");
++			host->cmd->error = -EINVAL;
++			host->data = NULL;
++			tasklet_schedule(&host->finish_task);
++			return;
++		}
++*/
++		int_status = 1;
++		host->data->error =  PILOT_SDHC_ERR_NONE;
++		pilot_sdhc_prepare_data(host, mrq->data);
++	}
++
++	if(host->mrq->stop){
++		PILOT_SDHC_DEBUG("HAS STOP COMMAND ALSO\n");
++	}
++
++
++	//spin_lock_bh(&host->lock);
++	spin_lock_irqsave(&host->lock, flags);
++
++	if(host->mrq->cmd)
++	{
++		host->cmd->error = PILOT_SDHC_ERR_NONE;
++		//printk("1\n");
++		pilot_sdhc_send_command(host, host->mrq->cmd, mrq);
++		//printk("2\n");
++	}
++
++	//spin_unlock_bh(&host->lock);
++	//Check if we are in PIO mode 
++	if((!dma) && (int_status))
++	{
++		if(host->mrq->data)
++		{
++			//printk("3\n");
++			if(host->mrq->data->flags & MMC_DATA_READ){
++				pilot_sdhc_do_pio_read(host);
++			}else{
++				pilot_sdhc_do_pio_write(host);
++			}
++		}
++		//printk("4\n");
++	}
++	spin_unlock_irqrestore(&host->lock, flags);
++
++	PILOT_SDHC_DEBUG("Finished sending the command\n");	
++}
++
++
++
++static void pilot_sdhc_setupLMEMPageCFG (struct pilot_sdhc_host * host, u8 high_wm,
++		u8 low_wm, u16 max_num_pages, u8 page_size_dw)
++{
++	u32 tempData;
++
++	tempData = *((volatile u32*)(host->iobase+ LMEMCTL_REG));
++	//clear all the required fields
++	tempData &= (~(LMEM_FREE_PAGE_LOW_WM));
++	tempData &= (~(LMEM_FREE_PAGE_HIGH_WM));
++
++	//store all the required values
++	tempData |= ((high_wm & LMEM_FREE_PAGE_HIGH_WM_BITS) << LMEM_FREE_PAGE_HIGH_WM_POS);
++	tempData |= ((low_wm & LMEM_FREE_PAGE_LOW_WM_BITS) << LMEM_FREE_PAGE_LOW_WM_POS);
++	*((volatile u32 *)(host->iobase + LMEMCTL_REG)) = tempData;
++
++	tempData = *((volatile u32 *)(host->iobase+ LMEMCFG_REG));
++	//clear all the required fields
++	tempData &= (~(LMEM_PAGE_SIZE_DWORDS));
++	tempData &= (~(LMEM_MAX_NUM_PAGES));
++
++	//store all the required values
++	tempData |= ((max_num_pages & LMEM_MAX_NUM_PAGES_BITS) << LMEM_MAX_NUM_PAGES_POS);
++	tempData |= ((page_size_dw & LMEM_PAGE_SIZE_DWORDS_BITS) << LMEM_PAGE_SIZE_DWORDS_POS);
++	*((volatile u32 *)(host->iobase+ LMEMCFG_REG)) = tempData;
++}
++
++static void pilot_sdhc_init(struct pilot_sdhc_host * host)
++{
++	u32 tempData;
++
++	PILOT_SDHC_DEBUG("Pilot SDHC I/O Mode is %d\n", dma);
++	if(dma)
++	{
++		host->gstruc = (struct dma_desc *)dma_alloc_coherent(NULL,
++				sizeof(struct dma_desc) * 512, &host->dma_addr, GFP_KERNEL);
++				//sizeof(struct dma_desc) * 64, &host->dma_addr, GFP_KERNEL);
++		host->astru = host->gstruc;
++		if(host->gstruc == NULL)
++		{
++			printk("ERROR: gstruc alloc coherent failed");
++			//return -1;
++		}
++	}
++
++	//printk("Pilot SDHC I/O Mode is %d\n", dma);
++	//TODO - Set clock to 400 KHz
++	pilot_sdhc_setCLKCTL(host, PILOT_SDHC_CLK_400KHz, 0x0, 0x1, 0x01);
++
++	//increase the Ncr timer
++	*((volatile u32*)(host->iobase + RSPTMR_REG)) = 0xF0;
++	tempData = *((volatile u32 *)(host->iobase + RSPTMR_REG));
++
++	//set Tac
++	*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff;
++	//Change crc turnaround timer
++	//*((u32*)(host->iobase + TXDTTMR_REG)) = 0x1854222;
++	*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1854232;
++
++	//TODO - Programn LMEM registers
++	pilot_sdhc_setupLMEMPageCFG (host, 0x2, 0x1, 0x4, 0x80);
++
++	//Initialize the write access timer
++/*
++    init_timer(&host->timer);
++    host->timer.data = (unsigned long) host;
++    host->timer.function = pilot_sdhc_access_timer_event;
++    timer_setup(&host->timer, pilot_sdhc_access_time_event, 0);
++	host->timer_added = 0;
++*/
++}
++
++static void pilot_sdhc_enable_all_interrupts(struct pilot_sdhc_host * host)
++{
++	PILOT_SDHC_DEBUG("Entered %s \n", __FUNCTION__);
++	*((volatile u32*)(host->iobase + SDINTEN_REG)) = 0x1ffffff;
++	*((volatile u32*)(host->iobase + SDINTSEN_REG)) = 0x1ffffff;
++}
++
++static void pilot_sdhc_disable_all_interrupts(struct pilot_sdhc_host * host)
++{
++	PILOT_SDHC_DEBUG("Entered %s \n", __FUNCTION__);
++	*((volatile u32*)(host->iobase + SDINTEN_REG)) = 0x0;
++	*((volatile u32*)(host->iobase + SDINTSEN_REG)) = 0x0;
++}
++
++static void pilot_sdhc_setCLKCTL(struct pilot_sdhc_host * host, u16 fsclk_divisor,
++		u8 sdclk_polarity, u8 sdclk_enable, u8 sdclk_select)
++{
++	volatile u32 tempData;
++	volatile int timeout = 1000000;
++
++	PILOT_SDHC_DEBUG("Entered %s \n", __FUNCTION__);
++	tempData = *((volatile u32*)(host->iobase + SDCLKCTL_REG));
++
++	//clear all the required fields
++	tempData &= (~(SDCLK_SELECT));
++	tempData &= (~(SDCLK_CLK_ENABLE));
++	tempData &= (~(SDCLK_POLARITY));
++	tempData &= (~(FSCLK_DIVISOR));
++
++	//store all the required values
++	tempData |= ((fsclk_divisor & FSCLK_DIVISOR_BITS)<<FSCLK_DIVISOR_POS);
++	tempData |= ((sdclk_polarity & SDCLK_POLARITY_BITS)<<SDCLK_POLARITY_POS);
++	tempData |= ((sdclk_enable & SDCLK_CLK_ENABLE_BITS)<<SDCLK_CLK_ENABLE_POS);
++	tempData |= ((sdclk_select & SDCLK_SELECT_BITS)<<SDCLK_SELECT_POS);
++
++	PILOT_SDHC_DEBUG("Value written to CLKCTRL REG is %x \n", tempData);
++	*((volatile u32*)(host->iobase + SDCLKCTL_REG)) = tempData;
++
++	/* Note added this part to stop getting spurious interrupts during card removal and insertion */
++	if(sdclk_enable == 0)
++	{
++		do{
++			tempData = *((volatile u32*)(host->iobase + SDCLKCTL_REG));
++			PILOT_SDHC_DEBUG("Clock register value inside loop is %x\n", tempData);
++			timeout--;
++			if(timeout <= 0) 
++			{
++				printk("%s %d Condition NOT met even after wait!!! Breaking while loop!!!\n", __FUNCTION__, __LINE__);
++#ifdef CONFIG_PANIC_AND_BAIL_OUT
++				panic("");
++#endif
++				break;
++			}
++			udelay(1);
++
++		}while((tempData & 0x2) != 0x2); 
++	}
++}
++
++static void pilot_sdhc_set_ios(struct mmc_host* mmc, struct mmc_ios* ios)
++{
++	struct pilot_sdhc_host * host = mmc_priv(mmc);
++	u16 clk = PILOT_SDHC_CLK_400KHz;
++
++	PILOT_SDHC_DEBUG("Entered %s \n", __FUNCTION__);
++	PILOT_SDHC_DEBUG("clock %uHz busmode %u powermode %u cs %u Vdd %u width %u\n",
++			ios->clock, ios->bus_mode, ios->power_mode, ios->chip_select,
++			ios->vdd, ios->bus_width);
++	spin_lock_bh(&host->lock);
++#if 0
++	if (ios->power_mode == MMC_POWER_OFF){
++		host->flags = HOST_F_STOP;
++	}else if (ios->power_mode == MMC_POWER_ON) {
++		host->flags = HOST_F_ACTIVE;
++	}
++#endif
++
++	if (ios->clock >= 50000000){
++
++		//Read the current clock value
++		clk = (((*((volatile u32*)(host->iobase + SDCLKCTL_REG))) & FSCLK_DIVISOR_BITS) >> FSCLK_DIVISOR_POS); 
++		//set Tac
++		*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff;
++		//Change crc turnaround timer
++		if(txdttmr_flg){
++			*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1844242;
++		}else{
++			*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1854232;
++		}
++		clk = PILOT_SDHC_CLK_50MHz;
++
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x0, 0x01);
++		host->clock = PILOT_SDHC_CLK_50MHz;
++		//0x40c00084 = 0xc0c0_0000; //Only in 50 Mhz Mode
++		*((volatile u32*)(host->iobase + FSBLK_CTRL_REG)) =  0xc0c00000;
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x1, 0x01);
++	}else if (ios->clock >= 25000000){
++		//Read the current clock value
++		clk = (((*((volatile u32*)(host->iobase + SDCLKCTL_REG))) & FSCLK_DIVISOR_BITS) >> FSCLK_DIVISOR_POS); 
++		//set Tac
++		*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff;
++		//Change crc turnaround timer
++		*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1854232;
++		clk = PILOT_SDHC_CLK_25MHz;
++
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x0, 0x01);
++		host->clock = PILOT_SDHC_CLK_25MHz;
++		*((volatile u32*)(host->iobase + FSBLK_CTRL_REG)) =  0x00000;
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x1, 0x01);
++	}else if( ios->clock >= 20000000){
++		//Read the current clock value
++		clk = (((*((volatile u32*)(host->iobase + SDCLKCTL_REG))) & FSCLK_DIVISOR_BITS) >> FSCLK_DIVISOR_POS);
++		//set Tac
++		*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff;
++		//Change crc turnaround timer
++		*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1854232;
++		clk = PILOT_SDHC_CLK_20MHz;
++
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x0, 0x01);
++		host->clock = PILOT_SDHC_CLK_20MHz;
++		*((volatile u32*)(host->iobase + FSBLK_CTRL_REG)) =  0x00000;
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x1, 0x01);
++
++	}else if (ios->clock == 0) {
++		//Read the current clock value
++		clk = (((*((volatile u32*)(host->iobase + SDCLKCTL_REG))) & FSCLK_DIVISOR_BITS) >> FSCLK_DIVISOR_POS); 
++		//set Tac
++		*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff;
++		//Change crc turnaround timer
++		*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1854232;
++		clk = 0;
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x0, 0x01);
++		host->clock = 0;
++		*((volatile u32*)(host->iobase + FSBLK_CTRL_REG)) =  0x00000;
++		host->bus_width = ios->bus_width;
++		spin_unlock_bh(&host->lock);
++		return;
++	}else{
++		//Read the current clock value
++		clk = (((*((volatile u32*)(host->iobase + SDCLKCTL_REG))) & FSCLK_DIVISOR_BITS) >> FSCLK_DIVISOR_POS); 
++		//set Tac
++		*((volatile u32*)(host->iobase+ RXDTTMR_REG)) = 0x7fffffff;
++		//Change crc turnaround timer
++		*((volatile u32*)(host->iobase + TXDTTMR_REG)) = 0x1854232;
++		clk = PILOT_SDHC_CLK_400KHz;
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x0, 0x01);
++		host->clock = PILOT_SDHC_CLK_400KHz;
++		*((volatile u32*)(host->iobase + FSBLK_CTRL_REG)) =  0x00000;
++		pilot_sdhc_setCLKCTL(host, clk, 0x0, 0x1, 0x01);
++	}
++
++	host->bus_width = ios->bus_width;
++	spin_unlock_bh(&host->lock);
++}
++
++static int pilot_sdhc_get_ro(struct mmc_host *mmc)
++{
++	struct pilot_sdhc_host * host = mmc_priv(mmc);
++	u32 tempData;
++	//Here read the Write protected bit in the PRSNTSTS register and return 1 if WP else 0
++	tempData = *((volatile u32*)(host->iobase + PRSNTST_REG));
++	if((tempData & WRITE_PROTECT_PIN_STATUS) == WRITE_PROTECT_PIN_STATUS){
++		return 1;
++	}
++	return 0;
++}
++
++struct mmc_host_ops pilot_sdhc_ops = {
++	.request = pilot_sdhc_request,
++	.set_ios = pilot_sdhc_set_ios,
++	.get_ro	= pilot_sdhc_get_ro,
++};
++
++static inline irqreturn_t pilot_sdhc_irq(int irq, void *dev_id)
++{
++	u32 int_status = 0;
++	struct pilot_sdhc_host *host = (struct pilot_sdhc_host *)dev_id;
++
++	int_status = *((volatile u32*)(host->iobase + SDINTSTS_REG));
++
++	PILOT_SDHC_DEBUG("Entered %s and INTSTS value is %x\n", __FUNCTION__, int_status);
++
++	if((int_status & PILOT_SDHC_MMC_BOOT_ACK) == PILOT_SDHC_MMC_BOOT_ACK)
++	{
++		PILOT_SDHC_DEBUG("MMC boot ACK \n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_MMC_BOOT_ACK;
++	}
++
++	if((int_status & PILOT_SDHC_WRITE_CMD_RSP_ERR) == PILOT_SDHC_WRITE_CMD_RSP_ERR)
++	{
++		PILOT_SDHC_DEBUG("Write Command Response Error\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_WRITE_CMD_RSP_ERR;
++		if(host->cmd == NULL)
++			goto ack_intr;
++		host->cmd->error = -ETIMEDOUT;
++	}
++
++	if((int_status & PILOT_SDHC_XDMA_COMPL_ERR) == PILOT_SDHC_XDMA_COMPL_ERR)
++	{
++		PILOT_SDHC_DEBUG("XDMA completion error\n");
++		//TODO- Confirm is it one data interrupt
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_XDMA_COMPL_ERR;
++	}
++
++	if((int_status & PILOT_SDHC_MMC_BOOT_COMPL) == PILOT_SDHC_MMC_BOOT_COMPL)
++	{
++		PILOT_SDHC_DEBUG("MMC Boot Complete\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_MMC_BOOT_COMPL;
++	}
++
++	if((int_status & PILOT_SDHC_AUTO_CMD12_COMPL) == PILOT_SDHC_AUTO_CMD12_COMPL)
++	{
++		PILOT_SDHC_DEBUG("AUTO CMD 12 Complete\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_AUTO_CMD12_COMPL;
++		//TODO- Here read the AUTOCMD12 register and put app value in 
++		host->expected_irqs &= ~(EXPECT_AUTOCMD12_INTR);
++		if(host->cmd == NULL)
++			goto ack_intr;
++		if(*((volatile u32*)(host->iobase + AUTOCMD12_REG)) != 0)
++		{
++#if 0 //Shailesh work around
++			host->cmd->error = -ETIMEDOUT | -EILSEQ;
++			host->data->error = -ETIMEDOUT | -EILSEQ;
++#endif
++		}else{
++			;
++		}	
++		if(host->expected_irqs == 0){
++			tasklet_schedule(&host->finish_task);
++		}
++	}
++
++	if((int_status & PILOT_SDHC_LIMIT_ERR) == PILOT_SDHC_LIMIT_ERR)
++	{
++		PILOT_SDHC_DEBUG("LIMIT_ERROR\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_LIMIT_ERR;
++	}
++
++	if((int_status & PILOT_SDHC_DATA_END_BIT_ERR) == PILOT_SDHC_DATA_END_BIT_ERR)
++	{
++		PILOT_SDHC_DEBUG("Data End Bit error\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_DATA_END_BIT_ERR;
++		//host->expected_irqs &= ~(EXPECT_DATA_INTR);
++		if(host->cmd == NULL)
++			goto ack_intr;
++		host->cmd->error = -EILSEQ;
++
++		if(host->data  == NULL)
++			goto ack_intr;
++
++		host->data->error = -EILSEQ;
++#if 0
++		if(host->expected_irqs == 0){
++			tasklet_schedule(&host->finish_task);
++		}
++#endif
++	}
++
++	if((int_status & PILOT_SDHC_DATA_CRC_ERR) == PILOT_SDHC_DATA_CRC_ERR)
++	{
++		PILOT_SDHC_DEBUG("Data CRC error\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_DATA_CRC_ERR;
++		//host->expected_irqs &= ~(EXPECT_DATA_INTR);
++		if(host->cmd == NULL)
++			goto ack_intr;
++		host->cmd->error = -EILSEQ;
++		if(host->data  == NULL)
++			goto ack_intr;
++		host->data->error = -EILSEQ;
++#if 0
++		if(host->expected_irqs == 0){
++			tasklet_schedule(&host->finish_task);
++		}
++#endif
++	}
++
++	if((int_status & PILOT_SDHC_DATA_TIMEOUT_ERR) == PILOT_SDHC_DATA_TIMEOUT_ERR)
++	{
++		PILOT_SDHC_DEBUG("Data Timeout error\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_DATA_TIMEOUT_ERR;
++		//host->expected_irqs &= ~(EXPECT_DATA_INTR);
++		if(host->cmd == NULL)
++			goto ack_intr;
++		host->cmd->error = -ETIMEDOUT;
++		if(host->data  == NULL)
++			goto ack_intr;
++		host->data->error = -ETIMEDOUT;
++ 		host->flags |= HOST_F_RESET;    /* The controller reset could be required to ensure correct operation of the SDHC */
++
++
++#if 0
++		if(host->expected_irqs == 0){
++			tasklet_schedule(&host->finish_task);
++		}
++#endif
++	}
++
++	if((int_status & PILOT_SDHC_WRITE_PROTCT_ERR) == PILOT_SDHC_WRITE_PROTCT_ERR)
++	{
++		PILOT_SDHC_DEBUG("Write Protect error\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_WRITE_PROTCT_ERR;
++		if(host->cmd == NULL)
++			goto ack_intr;
++		host->cmd->error = -ETIMEDOUT;
++		if(host->data  == NULL)
++			goto ack_intr;
++		host->data->error = -ETIMEDOUT;
++	}
++
++	if((int_status & PILOT_SDHC_TRANSFER_COMPL) == PILOT_SDHC_TRANSFER_COMPL)
++	{
++		PILOT_SDHC_DEBUG("Data Transfer Complete\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_TRANSFER_COMPL;
++		host->expected_irqs &= ~(EXPECT_DATA_INTR);
++		if(host->cmd == NULL)
++			goto ack_intr;
++		//host->data->bytes_xfered = (host->data->blocks * (1 << host->data->blksz_bits));
++		if(host->data  == NULL)
++			goto ack_intr;
++		host->data->bytes_xfered = (host->data->blocks * (host->data->blksz));
++#if 0
++		host->cmd->error = PILOT_SDHC_ERR_NONE;
++		host->data->error = PILOT_SDHC_ERR_NONE;
++#endif
++		if(host->expected_irqs == 0){
++			tasklet_schedule(&host->finish_task);
++		}
++	}
++
++	if((int_status & PILOT_SDHC_BUFFER_READ_RDY) == PILOT_SDHC_BUFFER_READ_RDY)
++	{
++		PILOT_SDHC_DEBUG("Buffer read ready\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_BUFFER_READ_RDY;
++	}
++
++	if((int_status & PILOT_SDHC_BUFFER_WRITE_RDY) == PILOT_SDHC_BUFFER_WRITE_RDY)
++	{
++		PILOT_SDHC_DEBUG("Buffer write ready\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_BUFFER_WRITE_RDY;
++	}
++
++	if((int_status & PILOT_SDHC_DMA_INTERRUPT) == PILOT_SDHC_DMA_INTERRUPT)
++	{
++		PILOT_SDHC_DEBUG("DMA Interrupt \n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_DMA_INTERRUPT;
++	}
++
++	if((int_status & PILOT_SDHC_CARD_INTRPT) == PILOT_SDHC_CARD_INTRPT)
++	{
++
++		PILOT_SDHC_DEBUG("Card Intrerrupt\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_CARD_INTRPT;
++	}
++
++	if((int_status & PILOT_SDHC_CARD_REMOVAL) == PILOT_SDHC_CARD_REMOVAL)
++	{
++		PILOT_SDHC_DEBUG("Card Removal interrupt received\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_CARD_REMOVAL;
++		host->flags = HOST_F_STOP;
++		//mmc_detect_change(host->mmc, 0);
++		tasklet_schedule(&host->card_task);
++	}
++
++
++	if((int_status & PILOT_SDHC_CARD_INSERTION) == PILOT_SDHC_CARD_INSERTION)
++	{
++		PILOT_SDHC_DEBUG("Card Insertion interrupt received\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_CARD_INSERTION;
++		host->flags = HOST_F_ACTIVE; //- This is actually done in set_ios
++		//mmc_detect_change(host->mmc, 0);
++		tasklet_schedule(&host->card_task);
++	}
++
++	if((int_status & PILOT_SDHC_CMD_TIMEOUT_ERR) == PILOT_SDHC_CMD_TIMEOUT_ERR)
++	{
++		PILOT_SDHC_DEBUG("Command timeout received\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_CMD_TIMEOUT_ERR;
++		if(host->cmd == NULL)
++			goto ack_intr;
++		host->cmd->error = -ETIMEDOUT;
++		//tasklet_schedule(&host->finish_task);
++	}
++
++	if((int_status & PILOT_SDHC_CMD_CRC_ERR) == PILOT_SDHC_CMD_CRC_ERR)
++	{
++		PILOT_SDHC_DEBUG("Command crc error received\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_CMD_CRC_ERR;
++		if(host->cmd == NULL)
++			goto ack_intr;
++		if(host->cmd->flags & MMC_RSP_CRC)
++			host->cmd->error = -EILSEQ;
++		//tasklet_schedule(&host->finish_task);
++	}
++
++	if((int_status & PILOT_SDHC_CMD_END_BIT_ERR) == PILOT_SDHC_CMD_END_BIT_ERR)
++	{
++		PILOT_SDHC_DEBUG("Command end bit error received\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_CMD_END_BIT_ERR;
++		if(host->cmd == NULL)
++			goto ack_intr;
++		if(host->cmd->flags & MMC_RSP_CRC)
++			host->cmd->error = -EILSEQ;
++		//tasklet_schedule(&host->finish_task);
++	}
++
++	if((int_status & PILOT_SDHC_CMD_INDEX_ERR) == PILOT_SDHC_CMD_INDEX_ERR)
++	{
++		PILOT_SDHC_DEBUG("Command index error received\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_CMD_INDEX_ERR;
++		if(host->cmd == NULL)
++			goto ack_intr;
++		if(host->cmd->flags & MMC_RSP_CRC)
++			host->cmd->error = -EILSEQ;
++		//tasklet_schedule(&host->finish_task);
++	}
++
++	if((int_status & PILOT_SDHC_COMMAND_COMPL) == PILOT_SDHC_COMMAND_COMPL)
++	{
++		PILOT_SDHC_DEBUG("Command completion received\n");
++		*((volatile u32*)(host->iobase + SDINTSTS_REG)) = PILOT_SDHC_COMMAND_COMPL;
++		host->expected_irqs &= ~(EXPECT_CMD_INTR);
++		if(host->expected_irqs == 0){
++			tasklet_schedule(&host->finish_task);
++		}
++	}
++
++	if((dma == 0) && (host->expected_irqs == 0xFFFFFFF0)){
++		tasklet_schedule(&host->finish_task);
++	}
++ack_intr:
++	return IRQ_HANDLED;
++}
++
++#if 0
++
++static void pilot_sdhc_finish_request(struct pilot_sdhc_host *host)
++{
++	struct mmc_request *mrq = host->mrq;
++#if 0
++
++	host->mrq = NULL;
++	host->flags &= HOST_F_ACTIVE;
++
++	host->dma.len = 0;
++	host->dma.dir = 0;
++
++	host->pio.index  = 0;
++	host->pio.offset = 0;
++	host->pio.len = 0;
++
++	host->status = HOST_S_IDLE;
++
++	bcsr->disk_leds |= (1 << 8);
++#endif
++	mmc_request_done(host->mmc, mrq);
++}
++
++static void pilot_sdhc_data_complete(struct pilot_sdhc_host *host, u32 status)
++{
++#if 0
++	struct mmc_request *mrq = host->mrq;
++	struct mmc_data *data;
++	u32 crc;
++
++	WARN_ON(host->status != HOST_S_DATA && host->status != HOST_S_STOP);
++
++	if (host->mrq == NULL)
++		return;
++
++	data = mrq->cmd->data;
++
++	if (status == 0)
++		status = au_readl(HOST_STATUS(host));
++
++	/* The transaction is really over when the SD_STATUS_DB bit is clear */
++
++	while((host->flags & HOST_F_XMIT) && (status & SD_STATUS_DB))
++		status = au_readl(HOST_STATUS(host));
++
++	data->error = PILOT_SDHC_ERR_NONE;
++	dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len, host->dma.dir);
++
++	/* Process any errors */
++
++	crc = (status & (SD_STATUS_WC | SD_STATUS_RC));
++	if (host->flags & HOST_F_XMIT)
++		crc |= ((status & 0x07) == 0x02) ? 0 : 1;
++
++	if (crc)
++		data->error = -EILSEQ;
++
++	/* Clear the CRC bits */
++	au_writel(SD_STATUS_WC | SD_STATUS_RC, HOST_STATUS(host));
++
++	data->bytes_xfered = 0;
++
++	if (data->error == PILOT_SDHC_ERR_NONE) {
++		if (host->flags & HOST_F_DMA) {
++			u32 chan = DMA_CHANNEL(host);
++
++			chan_tab_t *c = *((chan_tab_t **) chan);
++			au1x_dma_chan_t *cp = c->chan_ptr;
++			data->bytes_xfered = cp->ddma_bytecnt;
++		}
++		else
++			data->bytes_xfered =
++				//(data->blocks * (1 << data->blksz_bits)) -
++				(data->blocks * (data->blksz)) -
++				host->pio.len;
++	}
++#endif
++	pilot_sdhc_finish_request(host);
++}
++
++#endif
++
++static void pilot_sdhc_tasklet_card(unsigned long param)
++{
++	struct pilot_sdhc_host *host = (struct pilot_sdhc_host *) param;
++	int delay = 0;
++
++	if(host->flags == HOST_F_STOP){
++		//delay = 500;
++	}
++	mmc_detect_change(host->mmc, msecs_to_jiffies(delay));	
++}
++
++static void pilot_sdhc_tasklet_finish (unsigned long param)
++{
++	struct pilot_sdhc_host *host = (struct pilot_sdhc_host *) param;
++	struct mmc_request * mrq = NULL;
++	unsigned long flags;
++
++	if(host->timer_added)
++	{
++		host->timer_added = 0;
++		//del_timer(&host->timer);
++	}
++	spin_lock_irqsave(&host->lock, flags);
++	if(host->cmd == NULL)
++	{
++		//Someone else has completed this request 
++		spin_unlock_irqrestore(&host->lock, flags);
++		return;
++	}
++
++	host->cmd->resp[0] = *((volatile u32*)(host->iobase + SDRESP0_REG));
++	host->cmd->resp[1] = *((volatile u32*)(host->iobase + SDRESP1_REG));
++	host->cmd->resp[2] = *((volatile u32*)(host->iobase + SDRESP2_REG));
++	host->cmd->resp[3] = *((volatile u32*)(host->iobase + SDRESP3_REG));
++	//printk("CRC reg has %08x\n", *((volatile u32*)(host->iobase + CMDRSP_CRC_REG)));
++	//printk("Cmd argument %08x\n", host->cmd->arg);
++	if(mmc_resp_type(host->cmd) == MMC_RSP_R2)
++	{
++		//The above will take care
++		//printk("136 bit\n");
++		//printk("Rsp 0 - BITS 31:0 is %08x\n", host->cmd->resp[0]);
++		//printk("Rsp 1 - BITS 63:32 is %08x\n", host->cmd->resp[1]);
++		//printk("Rsp 2 - BITS 95:64 is %08x\n", host->cmd->resp[2]);
++		//printk("Rsp 3 - BITS 127:96 is %08x\n", host->cmd->resp[3]);
++		unsigned char tmp_buf[15] = {0};
++		tmp_buf[14] = *(((unsigned char *)host->cmd->resp)+1);
++		tmp_buf[13] = *(((unsigned char *)host->cmd->resp)+2);
++		tmp_buf[12] = *(((unsigned char *)host->cmd->resp)+3);
++		tmp_buf[11] = *(((unsigned char *)host->cmd->resp)+4);
++		tmp_buf[10] = *(((unsigned char *)host->cmd->resp)+5);
++		tmp_buf[9] = *(((unsigned char *)host->cmd->resp)+6);
++		tmp_buf[8] = *(((unsigned char *)host->cmd->resp)+7);
++		tmp_buf[7] = *(((unsigned char *)host->cmd->resp)+8);
++		tmp_buf[6] = *(((unsigned char *)host->cmd->resp)+9);
++		tmp_buf[5] = *(((unsigned char *)host->cmd->resp)+10);
++		tmp_buf[4] = *(((unsigned char *)host->cmd->resp)+11);
++		tmp_buf[3] = *(((unsigned char *)host->cmd->resp)+12);
++		tmp_buf[2] = *(((unsigned char *)host->cmd->resp)+13);
++		tmp_buf[1] = *(((unsigned char *)host->cmd->resp)+14);
++		tmp_buf[0] = *(((unsigned char *)host->cmd->resp)+15);
++		//printk("0 is %x 1 is %x 2 is %x\n", tmp_buf[0], tmp_buf[1], tmp_buf[2]);
++		//printk("Computed CRC is %x\n", pilot_sdhc_mmc_crc7(tmp_buf, 15));
++		//printk("Actual CRC is %x\n", (((volatile unsigned char *) host->cmd->resp)[0]));
++		if(pilot_sdhc_mmc_crc7(tmp_buf, 15) != (((volatile unsigned char *) host->cmd->resp)[0]))
++			host->cmd->error = -EILSEQ;
++		host->cmd->resp[0] = *((volatile u32*)(host->iobase + SDRESP3_REG));
++		host->cmd->resp[1] = *((volatile u32*)(host->iobase + SDRESP2_REG));
++		host->cmd->resp[2] = *((volatile u32*)(host->iobase + SDRESP1_REG));
++		host->cmd->resp[3] = *((volatile u32*)(host->iobase + SDRESP0_REG));
++
++	}
++	else if(mmc_resp_type(host->cmd) == MMC_RSP_NONE){
++		//Dont care for this 
++	}
++	else
++	{
++		//printk("48 bit\n");
++		//printk("Rsp 0 - BITS 31:0 is %08x\n", host->cmd->resp[0]);
++		//printk("Rsp 1 - BITS 63:32 is %08x\n", host->cmd->resp[1]);
++		//printk("Rsp 2 - BITS 95:64 is %08x\n", host->cmd->resp[2]);
++		//printk("Rsp 3 - BITS 127:96 is %08x\n", host->cmd->resp[3]);
++		host->cmd->resp[0] = host->cmd->resp[1];
++		host->cmd->resp[1] = host->cmd->resp[2];
++		host->cmd->resp[2] = host->cmd->resp[3];
++	}
++
++	PILOT_SDHC_DEBUG("Rsp 0 - BITS 31:0 is %08x\n", host->cmd->resp[0]);
++	PILOT_SDHC_DEBUG("Rsp 1 - BITS 63:32 is %08x\n", host->cmd->resp[1]);
++	PILOT_SDHC_DEBUG("Rsp 2 - BITS 95:64 is %08x\n", host->cmd->resp[2]);
++	PILOT_SDHC_DEBUG("Rsp 3 - BITS 127:96 is %08x\n", host->cmd->resp[3]);
++
++	if(host->data)
++	{
++		if(!dma)
++		{
++			u32 lmem_status = *((u32 *) (host->iobase +  LMEMSTATUS_REG));
++			if((lmem_status & (1<< 23)) == (1<< 23)){
++				printk("LMEM STATUS Bit 23 is 1 ERROR!!");
++			}
++			if((lmem_status & (1<< 22)) == (1<< 22)){
++				printk("LMEM STATUS Bit 22 is 1 ERROR!!");
++			}
++			if((lmem_status & (1<< 21)) == (1<< 21)){
++				printk("LMEM STATUS Bit 21 is 1 ERROR!!");
++			}
++			if((lmem_status & (1<< 20)) != (1<< 20)){
++				printk("LMEM STATUS Bit 20 is 0 ERROR!!");
++			}
++			if((lmem_status & (1<< 19)) == (1<< 19)){
++				printk("LMEM STATUS Bit 19 is 1 ERROR!!");
++			}
++			if((lmem_status & (1<< 18)) == (1<< 18)){
++				printk("LMEM STATUS Bit 18 is 1 ERROR!!");
++			}
++			if((lmem_status & (1<< 17)) == (1<< 17)){
++				printk("LMEM STATUS Bit 17 is 1 ERROR!!");
++			}
++			if((lmem_status & (1<< 16)) != (1<< 16)){
++				printk("LMEM STATUS Bit 16 is 0 ERROR!!");
++			}
++		}
++
++		/*  SDHC error handling enhancement */
++		/* In the event of a data error, assume no data was transfered. */
++		if (host->data->error)
++			host->data->bytes_xfered = 0;
++		/* Process request (following Data Timeout error) 
++			to reset the SDHC controller */
++		if (host->flags & HOST_F_RESET) {
++			host->flags &= ~HOST_F_RESET;
++			printk("INFO: pilot_tasklet_finish - Processing SDHC controller reset\n");
++			pilot_sdhc_card_reinit(host);
++		}
++		/* End changes */
++    
++		dma_unmap_sg(mmc_dev(host->mmc), host->data->sg, host->data->sg_len, host->dma.dir);
++	}
++
++	host->cmd = NULL; // dont worry cmd pointer is in host->mrq
++	host->data = NULL;
++	mrq = host->mrq;
++	host->mrq = NULL;
++	spin_unlock_irqrestore(&host->lock, flags);
++	mmc_request_done(host->mmc, mrq);
++}
++
++
++static int pilot_sdhc_probe(struct platform_device *pdev)
++{
++	struct mmc_host *mmc;
++	struct pilot_sdhc_host *host;
++	struct device_node *np = pdev->dev.of_node;
++	struct resource *iomem;
++	u32 tempData;
++	int ret = 0;
++	reset_sd_emmc();
++	if(!of_device_is_compatible(np, "pilot,emmc")) 
++	{
++		if(((*(volatile unsigned int *)IO_ADDRESS(0x40800718)) & 0x1) == 0x1 ) {
++			printk("Error: SDHC is claimed by SSP, not loading SDHC Driver\n");
++			return -1;
++		}
++	}
++
++	PILOT_SDHC_DEBUG("\nEntered %s \n\n", __FUNCTION__);
++	mmc = mmc_alloc_host(sizeof(struct pilot_sdhc_host), &pdev->dev);
++	if (!mmc) {
++		PILOT_SDHC_DEBUG(DRIVER_NAME "ERROR: no mem for host\n");
++	}
++
++	host= mmc_priv(mmc);
++	host->mmc = mmc;
++
++	mmc->ops = &pilot_sdhc_ops;
++	mmc->f_min =   400000;
++	mmc->f_max = 50000000;
++
++	mmc->max_seg_size = PILOT_SDHC_DESCRIPTOR_SIZE;
++	//mmc->max_phys_segs = PILOT_SDHC_DESCRIPTOR_COUNT;
++	mmc->max_segs = PILOT_SDHC_DESCRIPTOR_COUNT;
++
++	mmc->max_blk_count = 511;
++	mmc->max_blk_size = 4096 * 511;
++	mmc->max_req_size = 4096 * 511;
++	mmc->max_seg_size = mmc->max_req_size;
++	mmc->max_segs = 1;
++	if(dma)
++		mmc->max_segs = 511;
++	if(dma==0)
++	{
++#ifndef	MULTIBLOCK_WRITE
++		mmc->max_blk_size = 512;
++		mmc->max_blk_count = 1;
++		mmc->max_req_size = 4096;
++		mmc->max_segs = 1;
++		mmc->max_seg_size = mmc->max_req_size;
++#else
++		mmc->max_blk_size = 4096;
++		mmc->max_blk_count = 512;
++		mmc->max_req_size = 4096 * 512;
++#endif
++	}
++
++#if 0
++	mmc->max_sectors = PILOT_SDHC_DESCRIPTOR_COUNT;
++	mmc->max_seg_size = (PILOT_SDHC_DESCRIPTOR_COUNT * PILOT_SDHC_DESCRIPTOR_SIZE);
++#endif
++	mmc->ocr_avail = MMC_VDD_27_28 | MMC_VDD_28_29 | MMC_VDD_29_30 | MMC_VDD_30_31
++		| MMC_VDD_31_32 | MMC_VDD_32_33 | MMC_VDD_33_34;
++
++	if(of_device_is_compatible(np, "pilot,emmc"))
++	{
++		mmc->ocr_avail |=  (MMC_VDD_34_35 | MMC_VDD_35_36); 
++	}
++
++	host = mmc_priv(mmc);
++
++	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	host->iobase  = (u32)devm_ioremap_resource(&pdev->dev, iomem);
++	if (IS_ERR((u32 *)host->iobase)) {
++		return PTR_ERR((u32 *)host->iobase);
++	}
++	host->lmem_p = iomem->start + 0x400; /* LMEM base address */
++	host->lmem_v = host->iobase + 0x400; /* LMEM virtual address */
++
++	host->irq = platform_get_irq(pdev, 0);
++	if (host->irq < 0) {
++		dev_err(&pdev->dev, "failed to get IRQ number\n");
++		return host->irq;
++	}
++
++	host->mmc = mmc;
++	mmc->caps = (MMC_CAP_4_BIT_DATA | MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED); 
++//	mmc->caps2 |= MMC_CAP2_NO_MULTI_READ; //to Disable Multiblock Read
++
++	if(of_device_is_compatible(np, "pilot,emmc"))
++	{
++		mmc->caps = (MMC_CAP_8_BIT_DATA | MMC_CAP_4_BIT_DATA | MMC_CAP_MMC_HIGHSPEED | \
++				MMC_CAP_NONREMOVABLE | MMC_CAP_BUS_WIDTH_TEST | MMC_CAP_WAIT_WHILE_BUSY);
++	}
++
++	host->id = 1;
++	host->clock = 0;
++	host->power_mode = MMC_POWER_OFF;
++	host->pdev = pdev;
++
++	//See if the card is already inserted and update our status accordingly
++	host->flags = HOST_F_STOP;
++	tempData = *((volatile u32*)(host->iobase + PRSNTST_REG));
++	if((tempData & CARD_INSERTED) == CARD_INSERTED){
++		host->flags = HOST_F_ACTIVE;
++	}
++
++	tasklet_init(&host->card_task, pilot_sdhc_tasklet_card,	(unsigned long) host);
++	tasklet_init(&host->finish_task, pilot_sdhc_tasklet_finish, (unsigned long) host);
++
++	spin_lock_init(&host->lock);
++
++	pilot_sdhc_init(host);
++	pilot_sdhc_enable_all_interrupts(host);
++	ret = request_irq(host->irq, pilot_sdhc_irq, IRQF_SHARED, np->name, host);
++	if (ret)
++	{
++		PILOT_SDHC_DEBUG(DRIVER_NAME "ERROR: Couldn't get int %d: %d\n", host->irq, ret);
++		return -ENXIO;
++	}
++
++	PILOT_SDHC_DEBUG("SDHC using irq %x\n", host->irq);
++
++	mmc_add_host(mmc);
++	if(of_device_is_compatible(np, "pilot,sdhc-0"))
++		pilot_sdhc[0] = host;
++	if(of_device_is_compatible(np, "pilot,sdhc-1"))
++		pilot_sdhc[1] = host;
++	if(of_device_is_compatible(np, "pilot,emmc"))
++		pilot_sdhc[2] = host;
++
++	return 0;
++}
++
++static int pilot_sdhc_remove(struct platform_device *pdev)
++{
++	struct pilot_sdhc_host *host =platform_get_drvdata(pdev);
++	struct device_node *np = pdev->dev.of_node;
++	struct mmc_host *mmc;
++	
++	mmc=host->mmc;
++
++	PILOT_SDHC_DEBUG("Entered %s\n", __FUNCTION__);
++
++	if(of_device_is_compatible(np, "pilot,sdhc-0"))
++		host = pilot_sdhc[0];
++	if(of_device_is_compatible(np, "pilot,sdhc-1"))
++		host = pilot_sdhc[1];
++	if(of_device_is_compatible(np, "pilot,emmc"))
++		host = pilot_sdhc[2];
++
++	if(host == NULL)
++		return 0;
++
++	if(dma)
++		dma_free_coherent(NULL, sizeof(struct dma_desc) * 512, host->gstruc, host->dma_addr);
++
++	mmc_remove_host(host->mmc);
++	pilot_sdhc_disable_all_interrupts(host);
++	free_irq(host->irq, host);
++	tasklet_kill(&host->card_task);
++	tasklet_kill(&host->finish_task);
++	iounmap((u32 *)host->iobase);
++	mmc_free_host(host->mmc);
++
++	if(of_device_is_compatible(np, "pilot,sdhc-0"))
++		pilot_sdhc[0] = NULL;
++	if(of_device_is_compatible(np, "pilot,sdhc-1"))
++		pilot_sdhc[1] = NULL;
++	if(of_device_is_compatible(np, "pilot,emmc"))
++		pilot_sdhc[2] = NULL;
++	return 0;
++}
++
++static const struct of_device_id pilot_sdhc_of_match[] = {
++	{ .compatible = "pilot,sdhci-0" },
++	{ .compatible = "pilot,sdhci-1" },
++	{ .compatible = "pilot,emmc" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pilot_sdhc_of_match);
++
++static struct platform_driver pilot_sdhc_driver = {
++	.driver = {
++		.name  = DRIVER_NAME,
++		.of_match_table = pilot_sdhc_of_match,
++	},
++	.probe   = pilot_sdhc_probe,
++	.remove  = pilot_sdhc_remove,
++	.suspend = NULL,
++	.resume  = NULL,
++};
++
++module_platform_driver(pilot_sdhc_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Ashok Reddy Soma <ashok.soma@aspeedtech.com>");
++MODULE_DESCRIPTION("Aspeed' Pilot4 SD/eMMC Host Controller Driver");
++MODULE_VERSION(DRIVER_VERSION);

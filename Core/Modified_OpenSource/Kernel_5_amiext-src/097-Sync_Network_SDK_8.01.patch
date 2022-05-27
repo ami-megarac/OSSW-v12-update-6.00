@@ -1,0 +1,20 @@
+diff -Naur linux_ori/drivers/net/phy/realtek.c linux/drivers/net/phy/realtek.c
+--- linux_ori/drivers/net/phy/realtek.c	2022-04-26 10:34:24.512360526 +0800
++++ linux/drivers/net/phy/realtek.c	2022-04-26 10:24:24.925994928 +0800
+@@ -547,6 +547,16 @@
+ 		.read_page	= rtl821x_read_page,
+ 		.write_page	= rtl821x_write_page,
+ 	}, {
++		PHY_ID_MATCH_MODEL(0x001cc870),
++		.name		= "RTL8211F-VD Gigabit Ethernet",
++		.config_init	= &rtl8211f_config_init,
++		.ack_interrupt	= &rtl8211f_ack_interrupt,
++		.config_intr	= &rtl8211f_config_intr,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++		.read_page	= rtl821x_read_page,
++		.write_page	= rtl821x_write_page,
++	}, {
+ 		PHY_ID_MATCH_EXACT(0x001cc859),
+ 		.name		= "RTL8211FD-VX Gigabit Ethernet",
+ 		.config_init	= &rtl8211f_config_init,

@@ -1,0 +1,42 @@
+--- linux-5.4.99/drivers/mmc/core/mmc.c	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/mmc/core/mmc.c	2021-07-01 19:02:14.769793134 +0800
+@@ -388,6 +388,14 @@
+ 	 * are authorized, see JEDEC JESD84-B50 section B.8.
+ 	 */
+ 	card->ext_csd.rev = ext_csd[EXT_CSD_REV];
++        if(card->ext_csd.rev > 8)
++        {
++		pr_err("%s: unrecognised EXT_CSD revision %d\n",
++ 			mmc_hostname(card->host), card->ext_csd.rev);
++ 		err = -EINVAL;
++		goto out;
++        }
++        
+ 
+ 	/* fixup device after ext_csd revision field is updated */
+ 	mmc_fixup_device(card, mmc_ext_csd_fixups);
+@@ -1022,7 +1030,7 @@
+ 
+ 		bus_width = bus_widths[idx];
+ 		mmc_set_bus_width(host, bus_width);
+-
++		
+ 		/*
+ 		 * If controller can't handle bus width test,
+ 		 * compare ext_csd previously read in 1 bit mode
+@@ -1035,6 +1043,7 @@
+ 
+ 		if (!err) {
+ 			err = bus_width;
++			printk("mmc uses %i bits data transfer mode \n", 0x0001 << bus_width);
+ 			break;
+ 		} else {
+ 			pr_warn("%s: switch to bus width %d failed\n",
+@@ -1353,7 +1362,6 @@
+ 		err = err < 0 ? err : -ENOTSUPP;
+ 		goto out_err;
+ 	}
+-
+ 	/* Switch card to HS mode */
+ 	err = __mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+ 			   EXT_CSD_HS_TIMING, EXT_CSD_TIMING_HS,

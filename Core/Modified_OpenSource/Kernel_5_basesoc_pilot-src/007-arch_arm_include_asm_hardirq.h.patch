@@ -1,0 +1,15 @@
+--- linux-5.4.99/arch/arm/include/asm/hardirq.h	2021-02-17 17:35:20.000000000 +0800
++++ linux/arch/arm/include/asm/hardirq.h	2021-03-23 11:46:24.046841880 +0800
+@@ -7,7 +7,11 @@
+ #include <asm/irq.h>
+ 
+ /* number of IPIS _not_ including IPI_CPU_BACKTRACE */
+-#define NR_IPI	7
++#ifdef CONFIG_MACH_PILOT4_ASIC
++#define NR_IPI 8
++#else
++ #define NR_IPI	7
++#endif
+ 
+ typedef struct {
+ 	unsigned int __softirq_pending;

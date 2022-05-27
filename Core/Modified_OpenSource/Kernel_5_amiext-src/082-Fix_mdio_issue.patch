@@ -1,0 +1,18 @@
+diff -Naur linux_org/drivers/net/phy/mdio-aspeed.c linux/drivers/net/phy/mdio-aspeed.c
+--- linux_org/drivers/net/phy/mdio-aspeed.c	2021-12-15 17:31:40.974462593 +0800
++++ linux/drivers/net/phy/mdio-aspeed.c	2021-12-15 17:31:27.719087272 +0800
+@@ -61,6 +61,14 @@
+ 
+ 	iowrite32(ctrl, ctx->base + ASPEED_MDIO_CTRL);
+ 
++	rc = readl_poll_timeout(ctx->base + ASPEED_MDIO_CTRL, ctrl,
++				!(ctrl & ASPEED_MDIO_CTRL_FIRE),
++				ASPEED_MDIO_INTERVAL_US,
++				ASPEED_MDIO_TIMEOUT_US);
++	if (rc < 0)
++		return rc;
++
++
+ 	rc = readl_poll_timeout(ctx->base + ASPEED_MDIO_DATA, data,
+ 				data & ASPEED_MDIO_DATA_IDLE,
+ 				ASPEED_MDIO_INTERVAL_US,

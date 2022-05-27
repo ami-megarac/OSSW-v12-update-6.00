@@ -1,0 +1,10 @@
+--- linux-5.4.99/drivers/watchdog/Makefile	2021-02-17 17:35:20.000000000 +0800
++++ linux/drivers/watchdog/Makefile	2021-03-23 15:05:18.756631217 +0800
+@@ -25,6 +25,7 @@
+ obj-$(CONFIG_PCWATCHDOG) += pcwd.o
+ obj-$(CONFIG_MIXCOMWD) += mixcomwd.o
+ obj-$(CONFIG_WDT) += wdt.o
++obj-$(CONFIG_PILOT_WDT) += pilot_wdt.o
+ 
+ # PCI-based Watchdog Cards
+ obj-$(CONFIG_PCIPCWATCHDOG) += pcwd_pci.o
