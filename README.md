@@ -1,1 +1,1 @@
-# OSSW-v12-update-6.00-
+# OSSW-v12-update-6.00
